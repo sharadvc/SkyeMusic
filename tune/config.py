@@ -6,6 +6,7 @@ Read at daemon start; falls back to built-in defaults. All keys optional.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .queue import CONFIG_DIR
@@ -49,4 +50,6 @@ class Config:
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2))
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data, indent=2))
+        os.replace(tmp, self.path)  # atomic on POSIX

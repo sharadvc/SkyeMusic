@@ -56,7 +56,7 @@ tune m3u export <name> [file] # export a playlist to .m3u
 tune m3u import <file> [name] # import a .m3u as a playlist
 tune undo                     # undo the last remove/clear
 tune config autoplay on       # smart radio: keep playing similar songs at queue end
-tune config theme sunset      # TUI color theme (default/ocean/sunset/mono)
+tune config theme sunset      # TUI color theme — or press `t` in the TUI to browse all 28
 tune remote                   # show the phone/HTTP remote URL
 tune info                     # details for the current track
 tune status                   # now playing + progress
@@ -83,7 +83,8 @@ A URL or bare YouTube video id works anywhere a song name does: `tune play <url>
 | `:` | command bar (e.g. `:volume 50`, `:play search terms`) |
 | `s` | toggle shuffle |
 | `r` | cycle repeat: off → all → one |
-| `q` / `Esc` | quit the TUI (music keeps playing) |
+| `t` | theme picker — ↑/↓ browse (whole UI previews live), enter apply, esc cancel |
+| `q` / `Esc` | quit the TUI and stop playback (daemon stays running) |
 
 A live animated equalizer shows below the progress bar — it bounces while
 playing, freezes on pause, and lies flat when idle.

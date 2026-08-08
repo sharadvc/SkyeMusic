@@ -1,12 +1,14 @@
 """Full-screen TUI for tune (curses).
 
-A thin client: polls `status` every ~0.25s and sends key commands. Two modes:
+A thin client: polls `status` every ~0.25s and sends key commands. Modes:
 
 - **NOW** — now-playing header, progress bar, queue, transport keys.
 - **SEARCH** — press `/` to search YouTube from inside the UI; pick a result
   to play or add to the queue.
+- **THEME** — press `t` to browse and apply color themes live.
 
-Quitting the TUI (q / Esc in NOW mode) leaves the daemon and mpv playing.
+Quitting the TUI (q / Esc in NOW mode) stops playback; the daemon stays alive
+so re-opening tune is instant.
 """
 
 from __future__ import annotations
@@ -25,26 +27,67 @@ _STATE_MARK = {"playing": "▶", "paused": "⏸", "loading": "…", "idle": "·"
 _REPEAT_ORDER = ["off", "all", "one"]
 _SEARCH_LIMIT = 80
 _AMP_BLOCKS = "▁▂▃▄▅▆▇█"
+# Palette per theme: (header, current-track, accent, error, title, list).
+# `list` colors body text (queue / search / lyrics / help). Error stays red in
+# most themes because red is a semantic color.
 _THEMES = {
-    "default": (curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED),
-    "ocean": (curses.COLOR_BLUE, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_RED),
-    "sunset": (curses.COLOR_MAGENTA, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_RED),
-    "mono": (curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_RED),
+    "default":     (curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_WHITE),
+    "mono":        (curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE),
+    # A–Z
+    "amber":       (curses.COLOR_YELLOW, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_YELLOW),
+    "blue":        (curses.COLOR_BLUE, curses.COLOR_CYAN, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_WHITE),
+    "candy":       (curses.COLOR_MAGENTA, curses.COLOR_CYAN, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_YELLOW),
+    "dracula":     (curses.COLOR_MAGENTA, curses.COLOR_GREEN, curses.COLOR_CYAN, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_CYAN),
+    "emerald":     (curses.COLOR_GREEN, curses.COLOR_CYAN, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_WHITE),
+    "forest":      (curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_GREEN),
+    "grape":       (curses.COLOR_MAGENTA, curses.COLOR_GREEN, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_CYAN),
+    "honey":       (curses.COLOR_YELLOW, curses.COLOR_WHITE, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_YELLOW),
+    "ice":         (curses.COLOR_CYAN, curses.COLOR_WHITE, curses.COLOR_BLUE, curses.COLOR_RED, curses.COLOR_CYAN, curses.COLOR_CYAN),
+    "jungle":      (curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_CYAN, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_GREEN),
+    "krypton":     (curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_GREEN),
+    "lavender":    (curses.COLOR_MAGENTA, curses.COLOR_WHITE, curses.COLOR_CYAN, curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_CYAN),
+    "midnight":    (curses.COLOR_BLUE, curses.COLOR_WHITE, curses.COLOR_CYAN, curses.COLOR_RED, curses.COLOR_BLUE, curses.COLOR_CYAN),
+    "ninja":       (curses.COLOR_WHITE, curses.COLOR_GREEN, curses.COLOR_CYAN, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_WHITE),
+    "ocean":       (curses.COLOR_BLUE, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_CYAN, curses.COLOR_WHITE),
+    "plum":        (curses.COLOR_MAGENTA, curses.COLOR_YELLOW, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_CYAN),
+    "quantum":     (curses.COLOR_CYAN, curses.COLOR_MAGENTA, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_CYAN, curses.COLOR_CYAN),
+    "rose":        (curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_RED, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_WHITE),
+    "sunset":      (curses.COLOR_MAGENTA, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_WHITE),
+    "tokyo":       (curses.COLOR_MAGENTA, curses.COLOR_CYAN, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_WHITE),
+    "ultraviolet": (curses.COLOR_MAGENTA, curses.COLOR_CYAN, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_CYAN, curses.COLOR_WHITE),
+    "violet":      (curses.COLOR_MAGENTA, curses.COLOR_YELLOW, curses.COLOR_CYAN, curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_CYAN),
+    "watermelon":  (curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_GREEN),
+    "xray":        (curses.COLOR_CYAN, curses.COLOR_WHITE, curses.COLOR_MAGENTA, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_CYAN),
+    "yellow":      (curses.COLOR_YELLOW, curses.COLOR_WHITE, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_YELLOW),
+    "zen":         (curses.COLOR_GREEN, curses.COLOR_WHITE, curses.COLOR_CYAN, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_GREEN),
 }
 
 
 def _load_theme() -> str:
     try:
-        import json
-        from pathlib import Path
-        d = json.loads((Path.home() / ".config/tune/config.json").read_text())
-        theme = d.get("theme", "default")
+        from .config import Config  # honors XDG_CONFIG_HOME like the rest of the app
+        theme = Config().get("theme", "default")
         return theme if theme in _THEMES else "default"
     except Exception:
         return "default"
+
+
+def _apply_theme(name: str) -> None:
+    """(Re)initialize the color pairs for a theme. Safe to call any time, so
+    the whole screen re-themes live while the user browses the picker."""
+    colors = _THEMES.get(name, _THEMES["default"])
+    if not curses.has_colors():
+        return
+    header, current, accent, error, title, list = colors
+    curses.init_pair(1, header, -1)   # header bar
+    curses.init_pair(2, current, -1)  # current track in the queue
+    curses.init_pair(3, accent, -1)   # progress / time / meta / equalizer / input
+    curses.init_pair(4, error, -1)    # errors / unavailable
+    curses.init_pair(5, title, -1)    # now-playing title
+    curses.init_pair(6, list, -1)     # body text (queue / search / lyrics / help)
 _NOW_HELP = ("space pause · n/p next/prev · ↑/↓ select · d remove · enter jump · "
              "+/- vol · [ ] speed · ←/→ seek · l lyrics · s shuffle · r repeat · "
-             "/ search · q quit")
+             "t theme · / search · q quit")
 _SEARCH_HELP = "enter play · tab add to queue · ↑/↓ move · backspace edit · esc back"
 
 
@@ -73,11 +116,7 @@ def _loop(stdscr) -> None:
     if curses.has_colors():
         curses.start_color()
         curses.use_default_colors()
-        c1, c2, c3, c4 = _THEMES.get(_load_theme(), _THEMES["default"])
-        curses.init_pair(1, c1, -1)    # header
-        curses.init_pair(2, c2, -1)    # current track
-        curses.init_pair(3, c3, -1)    # meta / bar
-        curses.init_pair(4, c4, -1)    # error
+        _apply_theme(_load_theme())
 
     status: dict = {"state": "idle"}
 
@@ -97,11 +136,16 @@ def _loop(stdscr) -> None:
     threading.Thread(target=_poller, daemon=True).start()
 
     # search-mode state
-    mode = "now"                      # "now" | "search" | "cmd"
+    mode = "now"                      # "now" | "search" | "cmd" | "theme"
     sq, sresults, ssel = "", [], 0
     ssearching, smsg = False, ""
     sbucket: dict = {}
     cmdq, cmdmsg = "", ""
+
+    # theme-picker state
+    theme_names = list(_THEMES)
+    theme_saved = _load_theme()
+    theme_sel = theme_names.index(theme_saved) if theme_saved in theme_names else 0
 
     # UI state: queue selection, lyrics pane, amplifier clock
     ui = {"qsel": 0, "qsel_follow": True,
@@ -136,7 +180,7 @@ def _loop(stdscr) -> None:
         h, w = stdscr.getmaxyx()
         if h > 1 and w > 1:
             _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
-                  amp_t, ui, cmdq)
+                  amp_t, ui, cmdq, theme_sel, theme_names)
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -146,11 +190,15 @@ def _loop(stdscr) -> None:
         elif mode == "search":
             mode, sq, sresults, ssel, ssearching, smsg, sbucket = _search_key(
                 ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket)
+        elif mode == "theme":
+            mode, theme_sel, theme_saved = _theme_key(
+                ch, mode, theme_sel, theme_names, theme_saved)
         else:
             mode = _now_key(ch, mode, status, ui)
         if ui.pop("art", False):
             _show_art(stdscr)
         if mode == "quit":
+            _stop_on_quit()
             break
 
         curses.napms(100)
@@ -183,6 +231,15 @@ def _bg_send(verb: str, arg: str = "") -> None:
     threading.Thread(target=lambda: send_cmd(verb, arg), daemon=True).start()
 
 
+def _stop_on_quit() -> None:
+    """Stop playback when the user quits the TUI. Synchronous (not _bg_send)
+    so the command is delivered before this process exits."""
+    try:
+        send_cmd("stop")
+    except Exception:
+        pass  # daemon already gone / unreachable; nothing to stop
+
+
 def _now_key(ch: int, mode: str, status: dict, ui: dict) -> str:
     if ch == -1:
         return mode
@@ -202,7 +259,7 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict) -> str:
         return mode
     n = status.get("queue_len", 0)
     if ch in (ord("q"), 27):
-        mode = "quit"  # sentinel: quit the TUI (music keeps playing)
+        mode = "quit"  # sentinel: quit the TUI and stop playback
     elif ch == ord("l"):
         _toggle_lyrics(ui)
     elif ch == curses.KEY_UP:
@@ -244,6 +301,8 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict) -> str:
         _cycle_repeat(status)
     elif ch == ord("a"):
         ui["art"] = True
+    elif ch == ord("t"):
+        mode = "theme"
     elif ch == ord(":"):
         mode = "cmd"
     elif ch == ord("/"):
@@ -277,6 +336,26 @@ def _cmd_key(ch: int, mode: str, cmdq: str, cmdmsg: str):
     if 32 <= ch < 127:
         return mode, cmdq + chr(ch), cmdmsg
     return mode, cmdq, cmdmsg
+
+
+def _theme_key(ch, mode, sel, names, saved):
+    """Theme picker: ↑/↓ preview live, enter applies+saves, esc reverts."""
+    if ch == -1:
+        return mode, sel, saved
+    if ch in (27, ord("q")):  # esc / q cancels -> back to the saved theme
+        _apply_theme(saved)
+        return "now", sel, saved
+    if ch in (10, 13, curses.KEY_ENTER):
+        _bg_send("config", f"theme {names[sel]}")  # persist via the daemon
+        _apply_theme(names[sel])
+        return "now", sel, names[sel]
+    if ch == curses.KEY_DOWN:
+        sel = min(len(names) - 1, sel + 1)
+        _apply_theme(names[sel])
+    elif ch == curses.KEY_UP:
+        sel = max(0, sel - 1)
+        _apply_theme(names[sel])
+    return mode, sel, saved
 
 
 def _toggle_lyrics(ui: dict) -> None:
@@ -423,7 +502,8 @@ def _cycle_repeat(status: dict) -> None:
 # --- drawing ----------------------------------------------------------------
 
 def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
-          amp_t: float, ui: dict, cmdq: str = "") -> None:
+          amp_t: float, ui: dict, cmdq: str = "",
+          theme_sel: int = 0, theme_names: list | None = None) -> None:
     _draw_header(stdscr, status, w)
     _draw_amp(stdscr, status, amp_t, w)
     if mode == "search":
@@ -431,20 +511,31 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
     elif mode == "cmd":
         _draw_queue(stdscr, status, h, w, ui["qsel"])
         try:
-            stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[: w - 1], curses.A_BOLD)
+            stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[: w - 1],
+                          curses.A_BOLD | curses.color_pair(3))
+        except curses.error:
+            pass
+    elif mode == "theme":
+        _draw_queue(stdscr, status, h, w, ui["qsel"])
+        _draw_theme_picker(stdscr, h, w, theme_sel, theme_names or list(_THEMES))
+        try:
+            stdscr.addstr(h - 1, 0, "↑/↓ browse (live) · enter apply · esc cancel"[: w - 1],
+                          curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
     elif ui["lyr_on"]:
         _draw_lyrics(stdscr, status, ui, h, w)
         try:
             stdscr.addstr(h - 1, 0, ("space pause · n/p next/prev · +/- vol · "
-                                     "l/esc back · q quit")[: w - 1], curses.A_DIM)
+                                     "l/esc back · q quit")[: w - 1],
+                          curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
     else:
         _draw_queue(stdscr, status, h, w, ui["qsel"])
         try:
-            stdscr.addstr(h - 1, 0, _NOW_HELP[: w - 1], curses.A_DIM)
+            stdscr.addstr(h - 1, 0, _NOW_HELP[: w - 1],
+                          curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
 
@@ -456,7 +547,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int) -> None:
         return
     if ui["lyr_loading"]:
         try:
-            stdscr.addstr(top, 0, "loading lyrics…", curses.A_DIM)
+            stdscr.addstr(top, 0, "loading lyrics…", curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
         return
@@ -479,12 +570,14 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int) -> None:
             n = int((pos - ln.get("start", 0)) / dur * len(text))
             n = max(0, min(len(text), n))
             try:
-                stdscr.addstr(row, 0, text[:n], curses.A_REVERSE)
-                stdscr.addstr(row, n, text[n:], curses.A_BOLD)
+                stdscr.addstr(row, 0, text[:n], curses.color_pair(5) | curses.A_REVERSE)
+                stdscr.addstr(row, n, text[n:], curses.color_pair(5) | curses.A_BOLD)
             except curses.error:
                 pass
         else:
-            attr = curses.A_DIM if abs(i - cur) > 2 else 0
+            attr = curses.color_pair(6)
+            if abs(i - cur) > 2:
+                attr |= curses.A_DIM
             try:
                 stdscr.addstr(row, 0, text, attr)
             except curses.error:
@@ -498,7 +591,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int) -> None:
     if state == "idle":
         line = " " * w
     else:
-        amp = min(1.0, 0.35 + (status.get("volume") or 80) / 160.0)
+        amp = min(1.0, 0.35 + (status.get("volume", 80) or 80) / 160.0)
         heights = []
         for i in range(w):
             v = (math.sin(amp_t * (1.6 + (i % 7) * 0.35) + i * 1.7) + 1) / 2.0
@@ -526,7 +619,7 @@ def _draw_header(stdscr, status: dict, w: int) -> None:
     dur_s = _fmt_time(dur)
     time_str = f"{pos_s} / {dur_s}"
     try:
-        stdscr.addstr(1, 0, title[: w - 1])
+        stdscr.addstr(1, 0, title[: w - 1], curses.color_pair(5))
     except curses.error:
         pass
     try:
@@ -584,13 +677,44 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int) -> None:
         if is_sel and is_cur:
             attr = curses.color_pair(2) | curses.A_REVERSE
         elif is_sel:
-            attr = curses.A_REVERSE
+            attr = curses.color_pair(6) | curses.A_REVERSE
         elif is_cur:
             attr = curses.color_pair(2)
         else:
-            attr = 0
+            attr = curses.color_pair(6)
         try:
             stdscr.addstr(top + (i - start), 0, text[: w - 1], attr)
+        except curses.error:
+            pass
+
+
+def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str]) -> None:
+    top = 4
+    try:
+        stdscr.addstr(top, 0, " Theme  ·  ↑/↓ browse (live) · enter apply · esc cancel"[: w - 1],
+                      curses.color_pair(1) | curses.A_BOLD)
+    except curses.error:
+        pass
+    # scroll so the selected row stays visible on short terminals
+    avail = max(1, (h - 3) - top - 1)
+    start = max(0, min(sel - avail // 2, max(0, len(names) - avail)))
+    for i in range(start, min(len(names), start + avail)):
+        row = top + 2 + (i - start)
+        name = names[i]
+        col = 0
+        if curses.has_colors():  # swatch in the theme's own accent color
+            accent = _THEMES.get(name, _THEMES["default"])[2]
+            curses.init_pair(7, accent, -1)  # one reusable pair, any # of themes
+            try:
+                stdscr.addstr(row, 0, "▮▮▮ ", curses.color_pair(7))
+                col = 4
+            except curses.error:
+                pass
+        # selected row uses pair 1, which is the PREVIEWED theme's header color
+        attr = (curses.color_pair(1) | curses.A_BOLD) if i == sel else curses.color_pair(6)
+        try:
+            stdscr.addstr(row, col, (("▸" if i == sel else " ") + name)[: max(0, w - 1 - col)],
+                          attr)
         except curses.error:
             pass
 
@@ -599,14 +723,14 @@ def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg) -> None:
     # input line
     line = "Search: " + sq + "_"
     try:
-        stdscr.addstr(6, 0, line[: w - 1], curses.A_BOLD)
+        stdscr.addstr(6, 0, line[: w - 1], curses.A_BOLD | curses.color_pair(3))
     except curses.error:
         pass
 
     row = 8
     if ssearching:
         try:
-            stdscr.addstr(row, 0, f"searching {sq!r}…"[: w - 1])
+            stdscr.addstr(row, 0, f"searching {sq!r}…"[: w - 1], curses.color_pair(6))
         except curses.error:
             pass
     elif smsg:
@@ -623,7 +747,7 @@ def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg) -> None:
             mark = "▸" if i == ssel else " "
             title_w = max(1, w - 36)
             body = f"{mark} {i + 1}.  {r['title'][:title_w]:<{title_w}}  [{dur:>5}]  {channel[:16]}"
-            attr = curses.A_REVERSE if i == ssel else 0
+            attr = curses.color_pair(6) | (curses.A_REVERSE if i == ssel else 0)
             try:
                 stdscr.addstr(row, 0, body[: w - 1], attr)
             except curses.error:
@@ -632,11 +756,11 @@ def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg) -> None:
     else:
         try:
             stdscr.addstr(row, 0, "type a song (e.g. /search coldplay) and press enter"[: w - 1],
-                          curses.A_DIM)
+                          curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
 
     try:
-        stdscr.addstr(h - 1, 0, _SEARCH_HELP[: w - 1], curses.A_DIM)
+        stdscr.addstr(h - 1, 0, _SEARCH_HELP[: w - 1], curses.color_pair(6) | curses.A_DIM)
     except curses.error:
         pass

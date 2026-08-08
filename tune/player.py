@@ -115,6 +115,13 @@ class MpvHandle:
                     if line.strip():
                         self._dispatch_line(line.decode("utf-8", "replace"))
         finally:
+            # Resolve everything still pending so a caller blocked in
+            # `command()` fails fast instead of eating its full timeout.
+            with self._pending_lock:
+                pending, self._pending = self._pending, {}
+            for fut in pending.values():
+                if not fut.done():
+                    fut.set_exception(MpvError("mpv disconnected"))
             self.on_disconnect()
 
     def _dispatch_line(self, line: str) -> None:
@@ -135,12 +142,13 @@ class MpvHandle:
 
     # --- commands -----------------------------------------------------------
 
-    def _request(self, req: dict) -> Future:
+    def _request(self, req: dict) -> tuple[Future, int]:
         with self._pending_lock:
             self._next_id += 1
             req["request_id"] = self._next_id
+            rid = self._next_id
             fut = Future()
-            self._pending[self._next_id] = fut
+            self._pending[rid] = fut
         payload = (json.dumps(req) + "\n").encode("utf-8")
         with self._send_lock:
             if self._sock is None:
@@ -149,13 +157,15 @@ class MpvHandle:
                 self._sock.sendall(payload)
             except OSError as e:
                 raise MpvError(f"mpv connection lost: {e}")
-        return fut
+        return fut, rid
 
     def command(self, *args, timeout: float = 15.0):
-        fut = self._request({"command": list(args)})
+        fut, rid = self._request({"command": list(args)})
         try:
             reply = fut.result(timeout=timeout)
         except TimeoutError:
+            with self._pending_lock:
+                self._pending.pop(rid, None)  # don't leak timed-out requests
             raise MpvError(f"mpv timed out on {args!r}")
         err = reply.get("error")
         if err not in (None, "success"):

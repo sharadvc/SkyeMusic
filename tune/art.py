@@ -22,8 +22,13 @@ def _video_id(url: str) -> str | None:
 
 
 def _bmp_rows(path: str):
-    with open(path, "rb") as f:
-        data = f.read()
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if len(data) < 54:
+        return None
     w = int.from_bytes(data[18:22], "little")
     h = int.from_bytes(data[22:26], "little", signed=True)
     bpp = int.from_bytes(data[28:30], "little")
@@ -31,6 +36,8 @@ def _bmp_rows(path: str):
         return None
     row_size = ((w * 3 + 3) // 4) * 4
     ah = abs(h)
+    if len(data) < 54 + (ah - 1) * row_size + w * 3:
+        return None  # file truncated before the last row
     rows = []
     for y in range(ah):
         off = 54 + y * row_size

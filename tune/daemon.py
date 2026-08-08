@@ -105,6 +105,7 @@ class Daemon:
         self._cache_ttl = 600.0
         self._cache_max = 200
         self._op_lock = threading.Lock()  # serializes queue mutations (play/add/next/...)
+        self._play_gen = 0  # bumps on every queue-replacing action; stale plays don't apply
         self._sleep_deadline: float | None = None  # time.monotonic deadline for sleep timer
         self._favs: list[dict] = self._load_favorites()
         self._history: list[dict] = self._load_history()
@@ -503,28 +504,55 @@ class Daemon:
             return {"ok": False, "error": str(e)}
         except MpvError as e:
             return {"ok": False, "error": f"player error: {e}"}
-        except (ValueError, IndexError, OSError) as e:
+        except (ValueError, IndexError, KeyError, TypeError, OSError,
+                json.JSONDecodeError) as e:
             return {"ok": False, "error": str(e)}
 
     def _h_ping(self, _arg: str = "") -> dict:
         return {"ok": True, "data": {"version": __version__, "state": self._state}}
 
     def _resolve_all(self, args: list[str]) -> list[Track]:
-        """Resolve several queries/URLs into a flat track list (parallel when >1)."""
+        """Resolve several queries/URLs into a flat track list (parallel when >1).
+
+        Individual failures are logged and skipped so one bad song doesn't
+        abort the rest; only a total failure raises.
+        """
         if len(args) == 1:
             return self._tracks_for_arg(args[0])
+        results: list[Track] = []
+        errors: list[str] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-            results = list(ex.map(self._tracks_for_arg, args))
-        return [t for r in results for t in r]
+            futs = [ex.submit(self._tracks_for_arg, a) for a in args]
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    results.extend(fut.result())
+                except ResolveError as e:
+                    errors.append(str(e))
+        if not results and errors:
+            raise ResolveError(errors[0])
+        return results
+
+    def _wait_pending_play(self) -> None:
+        """Block until any in-flight `play` has applied, so an `add` doesn't
+        race a play that cleared the queue (the play owns it until done)."""
+        while True:
+            with self._lock:
+                if self._pending_arg is None:
+                    return
+            time.sleep(0.05)
 
     def _h_play(self, arg) -> dict:
         args = arg if isinstance(arg, list) else [arg]
         if not args or not all(isinstance(a, str) and a.strip() for a in args):
             return {"ok": False, "error": "empty play request"}
+        # Stop immediately and report "loading <arg>" while we resolve, so
+        # play feels instant even on a cold (uncached) search. The slow
+        # yt-dlp work happens WITHOUT holding _op_lock so transport keys
+        # (next/prev/remove/...) stay responsive while we look the song up.
         with self._op_lock:
-            # Stop immediately and report "loading <arg>" while we resolve, so
-            # play feels instant even on a cold (uncached) search.
             with self._lock:
+                self._play_gen += 1
+                gen = self._play_gen
                 self.q.tracks = []
                 self.q.index = -1
                 self.q.shuffle = False
@@ -532,6 +560,7 @@ class Daemon:
                 self._last_pos = 0.0
                 self._error_streak = 0
                 self._pending_arg = args[0]
+                self._restore_pos = None
                 self._error = None
                 self._state = "loading"
                 if self.player:
@@ -540,21 +569,30 @@ class Daemon:
                     except MpvError:
                         pass
                 self.q.save()
-            try:
-                tracks = self._resolve_all(args)
-            except ResolveError as e:
+        try:
+            tracks = self._resolve_all(args)
+        except ResolveError as e:
+            with self._op_lock:
                 with self._lock:
-                    self._pending_arg = None
-                    self._error = str(e)
-                    self._state = "idle"
-                return {"ok": False, "error": str(e)}
-            if not tracks:
+                    if gen == self._play_gen:
+                        self._pending_arg = None
+                        self._error = str(e)
+                        self._state = "idle"
+            return {"ok": False, "error": str(e)}
+        if not tracks:
+            with self._op_lock:
                 with self._lock:
-                    self._pending_arg = None
-                    self._error = "no playable tracks"
-                    self._state = "idle"
-                return {"ok": False, "error": "no playable tracks"}
+                    if gen == self._play_gen:
+                        self._pending_arg = None
+                        self._error = "no playable tracks"
+                        self._state = "idle"
+            return {"ok": False, "error": "no playable tracks"}
+        with self._op_lock:
             with self._lock:
+                if gen != self._play_gen:  # a newer play superseded this one
+                    return {"ok": True, "data": {"title": tracks[0].title,
+                                                 "count": len(tracks),
+                                                 "superseded": True}}
                 self._pending_arg = None
                 self.q.tracks = tracks
                 self.q.index = 0
@@ -565,18 +603,20 @@ class Daemon:
         args = arg if isinstance(arg, list) else [arg]
         if not args or not all(isinstance(a, str) and a.strip() for a in args):
             return {"ok": False, "error": "empty add request"}
+        self._wait_pending_play()  # don't race a play that cleared the queue
+        try:
+            tracks = self._resolve_all(args)  # slow part; no _op_lock held
+        except ResolveError as e:
+            return {"ok": False, "error": str(e)}
+        if not tracks:
+            return {"ok": False, "error": "no playable tracks"}
         with self._op_lock:
-            try:
-                tracks = self._resolve_all(args)
-            except ResolveError as e:
-                return {"ok": False, "error": str(e)}
-            if not tracks:
-                return {"ok": False, "error": "no playable tracks"}
             with self._lock:
-                was_empty = self.q.index < 0 and not self.q.tracks
+                start_now = self.q.index < 0  # empty queue OR finished naturally
                 self.q.tracks.extend(tracks)
-                if was_empty:
+                if start_now and self._pending_arg is None:
                     self.q.index = 0
+                    self._restore_pos = None
                     self._load_current_locked()
                 else:
                     self.q.save()
@@ -612,6 +652,7 @@ class Daemon:
                         return {"ok": True, "data": {"title": None}}
                 else:
                     self.q.index += 1
+                self._restore_pos = None  # user is changing tracks; drop crash-resume pos
                 self._load_current_locked()
                 t = self.q.current()
                 return {"ok": True, "data": {"title": t.title if t else None}}
@@ -629,6 +670,7 @@ class Daemon:
                     return {"ok": True, "data": {"title": t.title if t else None, "restart": True}}
                 if self.q.index > 0:
                     self.q.index -= 1
+                    self._restore_pos = None
                     self._load_current_locked()
                 else:
                     handle.command("seek", 0, "absolute")
@@ -645,6 +687,7 @@ class Daemon:
                 if not (0 <= i < len(self.q.tracks)):
                     return {"ok": False, "error": f"no track #{arg}"}
                 self.q.index = i
+                self._restore_pos = None
                 self._load_current_locked()
                 t = self.q.current()
                 return {"ok": True, "data": {"title": t.title if t else None}}
@@ -732,12 +775,11 @@ class Daemon:
             return {"ok": True, "data": {"device": arg}}
 
     def _h_download(self, arg: str) -> dict:
-        with self._op_lock:
-            try:
-                tracks = self._resolve_all([arg])
-            except ResolveError as e:
-                return {"ok": False, "error": str(e)}
-            track = tracks[0]
+        try:
+            tracks = self._resolve_all([arg])  # read-only; no _op_lock needed
+        except ResolveError as e:
+            return {"ok": False, "error": str(e)}
+        track = tracks[0]
         out_dir = self.cfg.get("download_dir") or os.path.expanduser("~/Downloads/tune")
         os.makedirs(out_dir, exist_ok=True)
         base = re.sub(r"[^\w\- ]+", "_", track.title).strip()[:60] or track.url
@@ -775,6 +817,8 @@ class Daemon:
             return {"ok": True, "data": {"lines": [], "note": "no subtitles available"}}
         with self._lock:
             self._lyrics[url] = lines
+            if len(self._lyrics) > self._cache_max:
+                self._lyrics.pop(next(iter(self._lyrics)))  # drop oldest
         return {"ok": True, "data": {"lines": lines, "cached": False}}
 
     def _h_art(self, _arg: str = "") -> dict:
@@ -791,6 +835,8 @@ class Daemon:
             return {"ok": False, "error": "could not fetch album art"}
         with self._lock:
             self._art_cache[url] = lines
+            if len(self._art_cache) > self._cache_max:
+                self._art_cache.pop(next(iter(self._art_cache)))  # drop oldest
         return {"ok": True, "data": {"lines": lines, "cached": False}}
 
     def _h_seek(self, arg: str) -> dict:
@@ -1013,6 +1059,9 @@ class Daemon:
                 if not self._favs:
                     return {"ok": False, "error": "no favorites yet"}
                 with self._lock:
+                    self._play_gen += 1
+                    self._pending_arg = None
+                    self._restore_pos = None
                     self.q.tracks = [Track(**f) for f in self._favs]
                     self.q.index = 0
                     self.q.shuffle = False
@@ -1064,6 +1113,9 @@ class Daemon:
                       for h in ranked[:50]]
             with self._op_lock:
                 with self._lock:
+                    self._play_gen += 1
+                    self._pending_arg = None
+                    self._restore_pos = None
                     self.q.tracks = tracks
                     self.q.index = 0
                     self.q.shuffle = False
@@ -1078,6 +1130,9 @@ class Daemon:
         if action == "load":
             with self._op_lock:
                 with self._lock:
+                    self._play_gen += 1
+                    self._pending_arg = None
+                    self._restore_pos = None
                     self.q.tracks = tracks
                     self.q.index = 0
                     self.q.shuffle = False
@@ -1086,10 +1141,11 @@ class Daemon:
         if action == "add":
             with self._op_lock:
                 with self._lock:
-                    was_empty = self.q.index < 0 and not self.q.tracks
+                    start_now = self.q.index < 0  # empty OR finished naturally
                     self.q.tracks.extend(tracks)
-                    if was_empty:
+                    if start_now and self._pending_arg is None:
                         self.q.index = 0
+                        self._restore_pos = None
                         self._load_current_locked()
                     else:
                         self.q.save()

@@ -20,20 +20,27 @@ class TuneError(Exception):
     pass
 
 
+_REPLY_TIMEOUT = 75.0  # cold yt-dlp lookups can take well over 30s
+
+
 def _connect(verb: str, arg: str) -> dict:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        s.settimeout(5.0)
+        s.settimeout(5.0)  # keep connect fast so "not up yet" != "slow reply"
         s.connect(str(CTRL_SOCK))
+        s.settimeout(_REPLY_TIMEOUT)
         s.sendall((json.dumps({"verb": verb, "arg": arg}) + "\n").encode("utf-8"))
-        s.settimeout(25.0)  # a reply can take a few seconds (e.g. resolving a song)
         buf = b""
         while b"\n" not in buf:
             chunk = s.recv(4096)
             if not chunk:
                 break
             buf += chunk
+        if not buf:
+            raise ConnectionError("daemon closed the connection without a reply")
         return json.loads(buf.split(b"\n", 1)[0])
+    except TimeoutError:
+        raise TuneError(f"daemon timed out on '{verb}' (still working)") from None
     finally:
         s.close()
 
@@ -41,6 +48,10 @@ def _connect(verb: str, arg: str) -> dict:
 def _daemon_running() -> bool:
     """True if a daemon holds the single-instance lock."""
     try:
+        # Make sure the config dir exists first: a missing dir used to look
+        # like "lock busy", so the very first command on a fresh machine
+        # would never auto-start the daemon.
+        LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(LOCK_FILE, "w") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return False  # we acquired it, so no daemon holds it
@@ -74,6 +85,8 @@ def send_cmd(verb: str, arg: str = "") -> dict:
     for _ in range(40):  # ~8s budget for daemon startup + retries
         try:
             return _connect(verb, arg)
+        except TuneError:
+            raise  # daemon has the command; retrying would duplicate it
         except (OSError, ValueError) as e:
             last = e
             if not started and not _daemon_running():

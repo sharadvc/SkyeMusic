@@ -13,12 +13,15 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-_TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})")
+_TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})[.,](\d{1,3})")
 
 
 def _parse_ts(ts: str) -> float:
-    h, m, s, ms = _TS_RE.match(ts).groups()
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+    m = _TS_RE.match(ts)
+    if not m:
+        return 0.0
+    h, mnt, s, ms = m.groups()
+    return int(h) * 3600 + int(mnt) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000.0
 
 
 def parse_vtt(text: str) -> list[dict]:
@@ -29,7 +32,7 @@ def parse_vtt(text: str) -> list[dict]:
         if not block or block.startswith("WEBVTT"):
             continue
         first, _, rest = block.partition("\n")
-        m = re.match(r"(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})", first)
+        m = re.match(r"(\d{2}:\d{2}:\d{2}[.,]\d{1,3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{1,3})", first)
         if not m:
             continue
         start, end = _parse_ts(m.group(1)), _parse_ts(m.group(2))

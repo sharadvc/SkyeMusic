@@ -41,9 +41,9 @@ async function refresh(){try{const j=await(await fetch('/api/status')).json();co
  document.getElementById('now').textContent=(d.title||'nothing playing')+' — '+(d.state||'');}catch(e){}}
 async function search(){const q=document.getElementById('q').value;
  const j=await(await fetch('/api/search?arg='+encodeURIComponent(q))).json();
- const rs=(j.data&&j.data.results)||[];
- document.getElementById('r').innerHTML=rs.map(t=>
- `<div><a href="javascript:c('play','${encodeURIComponent(t.url)}')">▶ ${t.title}</a></div>`).join('')||'no results';}
+ const rs=(j.data&&j.data.results)||[];window._tune_results=rs;
+ document.getElementById('r').innerHTML=rs.map((t,i)=>
+ `<div><a href="javascript:c('play',window._tune_results[${i}].url)">▶ ${t.title}</a></div>`).join('')||'no results';}
 refresh();setInterval(refresh,2000);
 </script></body></html>"""
 
