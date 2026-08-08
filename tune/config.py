@@ -22,6 +22,12 @@ DEFAULTS = {
     "device": "",             # audio device name ("" = default)
     "download_dir": "",       # where `tune download` saves files ("" = ~/Downloads/tune)
     "http_port": 8765,        # phone/HTTP remote control port (0 = disabled)
+    "remote_pin": "",         # optional 4+ digit PIN for the phone remote ("" = no pin)
+    "media_keys": True,       # macOS global media-key control (play/pause/next/prev)
+    "smart_queue": False,     # keep appending related tracks when the queue runs short
+    "resume": False,          # per-track resume (podcast mode): remember each track's position
+    "intro_skip": 0,          # seconds to skip at the start of a never-resumed track
+    "listenbrainz_token": "", # scrobble to ListenBrainz ("" = disabled)
     "on_track_change": "",    # shell command run on every track change (receives title/url)
 }
 

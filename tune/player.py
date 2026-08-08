@@ -44,7 +44,7 @@ class MpvHandle:
 
     # --- lifecycle ---------------------------------------------------------
 
-    def start(self) -> "MpvHandle":
+    def start(self) -> MpvHandle:
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)
         self.proc = subprocess.Popen(
@@ -147,7 +147,7 @@ class MpvHandle:
             self._next_id += 1
             req["request_id"] = self._next_id
             rid = self._next_id
-            fut = Future()
+            fut: Future = Future()
             self._pending[rid] = fut
         payload = (json.dumps(req) + "\n").encode("utf-8")
         with self._send_lock:
@@ -156,7 +156,7 @@ class MpvHandle:
             try:
                 self._sock.sendall(payload)
             except OSError as e:
-                raise MpvError(f"mpv connection lost: {e}")
+                raise MpvError(f"mpv connection lost: {e}") from e
         return fut, rid
 
     def command(self, *args, timeout: float = 15.0):
@@ -166,7 +166,7 @@ class MpvHandle:
         except TimeoutError:
             with self._pending_lock:
                 self._pending.pop(rid, None)  # don't leak timed-out requests
-            raise MpvError(f"mpv timed out on {args!r}")
+            raise MpvError(f"mpv timed out on {args!r}") from None
         err = reply.get("error")
         if err not in (None, "success"):
             raise MpvError(f"mpv {args!r}: {err}")

@@ -16,12 +16,13 @@ import re
 import shlex
 import shutil
 import signal
-import socket
 import socketserver
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
+from typing import cast
 
 from . import __version__
 from .art import render as render_art
@@ -29,11 +30,25 @@ from .config import Config
 from .lyrics import fetch as fetch_lyrics
 from .player import MpvError, MpvHandle
 from .queue import (
-    CTRL_SOCK, FAVORITES_FILE, HISTORY_FILE, LOCK_FILE, LOG_FILE, MPV_SOCK,
-    PLAYLIST_DIR, QUEUE_FILE, VOLUME_MAX, QueueState, Track,
+    CTRL_SOCK,
+    FAVORITES_FILE,
+    HISTORY_FILE,
+    LOCK_FILE,
+    LOG_FILE,
+    MPV_SOCK,
+    PLAYLIST_DIR,
+    QUEUE_FILE,
+    VOLUME_MAX,
+    QueueState,
+    Track,
 )
 from .resolver import (
-    ResolveError, is_playlist_url, resolve, resolve_playlist, resolve_radio, search,
+    ResolveError,
+    is_playlist_url,
+    resolve,
+    resolve_playlist,
+    resolve_radio,
+    search,
 )
 
 
@@ -78,6 +93,31 @@ def _do_download(ytdl: str, url: str, out_dir: str, base: str) -> None:
         log(f"download failed: {e}")
 
 
+def _do_download_queue(ytdl: str, tracks, out_dir: str) -> None:
+    """Download every track in the queue sequentially (background thread)."""
+    ok = 0
+    for t in tracks:
+        base = re.sub(r"[^\w\- ]+", "_", t.title).strip()[:60] or t.url
+        _do_download(ytdl, t.url, out_dir, base)
+        ok += 1
+    log(f"queue download finished: {ok}/{len(tracks)} tracks → {out_dir}")
+
+
+def _mk_dispatch(daemon):
+    """Build the media-key callback: NX keycode -> daemon command."""
+    verbs = {8: "next", 9: "prev", 10: "toggle"}  # NX_KEYTYPE_NEXT/PREVIOUS/PLAY
+
+    def on_key(code: int) -> None:
+        verb = verbs.get(code)
+        if verb:
+            try:
+                daemon.dispatch(json.dumps({"verb": verb, "arg": ""}))
+            except Exception:
+                pass
+
+    return on_key
+
+
 class Daemon:
     def __init__(self):
         self.cfg = Config()
@@ -93,11 +133,12 @@ class Daemon:
         self._error: str | None = None
         self._last_pos = self.q.position
         self._error_streak = 0
-        self._speed = 1.0
+        self._speed = self.q.speed
         self._stop = threading.Event()
         self._evq: queue.Queue | None = None
         self._restore_pos: float | None = None  # seek target to apply on file-loaded
         self._pending_arg: str | None = None  # song being resolved for 'play'
+        self._back_stack: list[str] = []  # urls actually played, newest last (for prev)
         self._props: dict = {}  # mpv properties cached via observe_property
         # resolve/search caches: key -> (timestamp, value); no lock held during yt-dlp
         self._resolve_cache: dict[str, tuple[float, Track]] = {}
@@ -106,12 +147,14 @@ class Daemon:
         self._cache_max = 200
         self._op_lock = threading.Lock()  # serializes queue mutations (play/add/next/...)
         self._play_gen = 0  # bumps on every queue-replacing action; stale plays don't apply
+        self._sq_running = False  # one smart-queue refill at a time
         self._sleep_deadline: float | None = None  # time.monotonic deadline for sleep timer
         self._favs: list[dict] = self._load_favorites()
         self._history: list[dict] = self._load_history()
         self._lyrics: dict[str, list] = {}  # url -> timed lyric lines
         self._art_cache: dict[str, list] = {}  # url -> ANSI art lines
-        self._undo: list = []  # ("remove", idx, track_dict) | ("clear", tracks, index)
+        self._undo: list = []  # ("remove", i, track) | ("clear", tr, idx) |
+                              # ("replace", tr, idx) | ("shuffle", tr)
 
     # --- mpv management ----------------------------------------------------
 
@@ -202,12 +245,14 @@ class Daemon:
             return
         if self.q.index >= n - 1:
             if self.q.repeat == "all":
+                self._push_back()
                 self.q.index = 0
                 if self.q.shuffle:
                     self.q.reshuffle_after_current()  # fresh order each cycle
                 self._load_current_locked()
             else:
                 last_url = self.q.tracks[-1].url if self.q.tracks else None
+                self._push_back()
                 self.q.index = -1
                 self._state = "idle"
                 self.q.save()
@@ -215,6 +260,7 @@ class Daemon:
                     threading.Thread(target=self._autoplay, args=(last_url,),
                                      daemon=True).start()
             return
+        self._push_back()
         self.q.index += 1
         self._load_current_locked()
 
@@ -241,6 +287,27 @@ class Daemon:
                     self.q.save()
         log(f"autoplay: queued {len(fresh)} related tracks")
 
+    # --- back stack (what you actually heard, for prev) ---------------------
+
+    def _push_back(self) -> None:
+        """Record the current track as 'previously heard' (caller holds _lock)."""
+        now = self.q.current()
+        if now is None:
+            return
+        self._back_stack.append(now.url)
+        if len(self._back_stack) > 50:
+            self._back_stack = self._back_stack[-50:]
+
+    def _clear_back(self) -> None:
+        self._back_stack = []
+
+    def _index_of(self, url: str) -> int | None:
+        for i, t in enumerate(self.q.tracks):
+            if t.url == url:
+                return i
+        return None
+
+
     # --- mpv event handling -------------------------------------------------
 
     def _event_loop(self) -> None:
@@ -258,19 +325,14 @@ class Daemon:
             elif kind == "file-loaded":
                 with self._lock:
                     self._state = "playing"
-                    if self._restore_pos is not None and self.player:
-                        pos, self._restore_pos = self._restore_pos, None
-                        if pos > 5:
-                            try:
-                                self.player.command("seek", pos, "absolute")
-                            except MpvError:
-                                pass
+                    self._apply_loaded_position_locked()
                     if self._speed != 1.0 and self.player:
                         try:
                             self.player.set_property("speed", self._speed)
                         except MpvError:
                             pass
                     self._on_track_loaded_locked()
+                    self._maybe_smart_queue_locked()
             elif kind == "idle":
                 with self._lock:
                     self._state = "idle"
@@ -289,6 +351,13 @@ class Daemon:
         with self._lock:
             if reason == "eof":
                 self._error_streak = 0
+                now = self.q.current()
+                if now:
+                    t = now
+                    threading.Thread(target=self._scrobble,
+                                     args=(t.title, t.channel, t.url, t.duration),
+                                     daemon=True).start()
+                self._record_position_locked()
                 self._advance_locked()
             elif reason == "error":
                 self._error_streak += 1
@@ -312,8 +381,90 @@ class Daemon:
                 if pos is not None:
                     self._last_pos = float(pos)
                     self.q.position = float(pos)
+                    if self.cfg.get("resume"):
+                        now = self.q.current()
+                        if now:
+                            self.q.positions[now.url] = float(pos)
+                            if len(self.q.positions) > 500:
+                                self.q.positions.pop(next(iter(self.q.positions)), None)
                 if ticks % 5 == 0:
                     self.q.save()
+
+    # --- loaded-track position / resume / smart queue ------------------------
+
+    def _apply_loaded_position_locked(self) -> None:
+        """Seek on file-loaded: crash-resume pos, per-track resume, or intro skip."""
+        if self.player is None:
+            return
+        now = self.q.current()
+        # 1) crash recovery / daemon-start resume (highest priority)
+        if self._restore_pos is not None:
+            pos, self._restore_pos = self._restore_pos, None
+            if pos > 5:
+                try:
+                    self.player.command("seek", pos, "absolute")
+                except MpvError:
+                    pass
+            return
+        if now is None:
+            return
+        url = now.url
+        # 2) per-track resume (podcast mode)
+        if self.cfg.get("resume"):
+            saved = self.q.positions.get(url)
+            if saved and saved > 5:
+                try:
+                    self.player.command("seek", saved, "absolute")
+                except MpvError:
+                    pass
+                return
+        # 3) intro skip for a never-resumed track
+        n = int(self.cfg.get("intro_skip") or 0)
+        if n > 0:
+            try:
+                self.player.command("seek", n, "absolute")
+            except MpvError:
+                pass
+
+    def _record_position_locked(self) -> None:
+        now = self.q.current()
+        if now and self.cfg.get("resume"):
+            self.q.positions[now.url] = max(0.0, self._last_pos)
+            if len(self.q.positions) > 500:
+                self.q.positions.pop(next(iter(self.q.positions)), None)
+
+    def _maybe_smart_queue_locked(self) -> None:
+        """If the queue is nearly empty and smart_queue is on, refill it."""
+        if not self.cfg.get("smart_queue") or self._sq_running:
+            return
+        now = self.q.current()
+        if now is None:
+            return
+        if len(self.q.tracks) - self.q.index - 1 < 3:
+            self._sq_running = True
+            threading.Thread(target=self._smart_queue_refill, args=(now.url,),
+                             daemon=True).start()
+
+    def _smart_queue_refill(self, url: str) -> None:
+        try:
+            tracks = resolve_radio(url)
+        except Exception as e:
+            log(f"smart queue failed: {e}")
+            self._sq_running = False
+            return
+        added = 0
+        if tracks:
+            with self._op_lock:
+                with self._lock:
+                    existing = {t.url for t in self.q.tracks}
+                    fresh = [t for t in tracks if t.url not in existing][:20]
+                    added = len(fresh)
+                    if fresh:
+                        self.q.tracks.extend(fresh)
+                        self.q.save()
+        self._sq_running = False
+        if added:
+            log(f"smart queue: appended {added} related tracks")
 
     # --- resolve cache ------------------------------------------------------
 
@@ -393,6 +544,30 @@ class Daemon:
         # notification + hook run in a background thread (never block playback)
         title, url = now.title, now.url
         threading.Thread(target=self._notify_track, args=(title, url), daemon=True).start()
+        # scrobble "now playing" to ListenBrainz if configured
+        if self.cfg.get("listenbrainz_token"):
+            threading.Thread(target=self._playing_now,
+                             args=(now.title, now.channel, now.url),
+                             daemon=True).start()
+
+    def _playing_now(self, title: str, channel: str, url: str) -> None:
+        try:
+            from .scrobble import submit_playing_now
+            submit_playing_now(self.cfg.get("listenbrainz_token"), title,
+                               channel or "unknown", url)
+        except Exception as e:
+            log(f"scrobble playing-now failed: {e}")
+
+    def _scrobble(self, title: str, channel: str, url: str, duration: float | None) -> None:
+        token = self.cfg.get("listenbrainz_token")
+        if not token:
+            return
+        try:
+            from .scrobble import submit_scrobble
+            submit_scrobble(token, title, channel or "unknown", url,
+                            int(time.time()), duration)
+        except Exception as e:
+            log(f"scrobble failed: {e}")
 
     def _notify_track(self, title: str, url: str) -> None:
         if self.cfg.get("notifications"):
@@ -458,7 +633,7 @@ class Daemon:
             arg = msg.get("arg", "")
         except json.JSONDecodeError:
             return {"ok": False, "error": "bad request"}
-        handler = {
+        handler = cast("Callable[[object], dict] | None", {
             "ping": self._h_ping,
             "play": self._h_play,
             "add": self._h_add,
@@ -478,6 +653,7 @@ class Daemon:
             "remove": self._h_remove,
             "clear": self._h_clear,
             "undo": self._h_undo,
+            "move": self._h_move,
             "m3u": self._h_m3u,
             "shuffle": self._h_shuffle,
             "repeat": self._h_repeat,
@@ -495,7 +671,7 @@ class Daemon:
             "config": self._h_config,
             "remote": self._h_remote,
             "quit-daemon": self._h_quit,
-        }.get(verb)
+        }.get(verb))
         if handler is None:
             return {"ok": False, "error": f"unknown verb {verb!r}"}
         try:
@@ -551,6 +727,12 @@ class Daemon:
         # (next/prev/remove/...) stay responsive while we look the song up.
         with self._op_lock:
             with self._lock:
+                if self.q.tracks:
+                    self._undo.append(("replace",
+                                       [t.as_json() for t in self.q.tracks],
+                                       self.q.index))
+                    self._undo = self._undo[-20:]
+                self._clear_back()  # new context; prev now means nothing before this
                 self._play_gen += 1
                 gen = self._play_gen
                 self.q.tracks = []
@@ -612,16 +794,21 @@ class Daemon:
             return {"ok": False, "error": "no playable tracks"}
         with self._op_lock:
             with self._lock:
+                existing = {t.url for t in self.q.tracks}
+                fresh = [t for t in tracks if t.url not in existing]
+                skipped = len(tracks) - len(fresh)
                 start_now = self.q.index < 0  # empty queue OR finished naturally
-                self.q.tracks.extend(tracks)
-                if start_now and self._pending_arg is None:
-                    self.q.index = 0
+                self.q.tracks.extend(fresh)
+                if start_now and fresh and self._pending_arg is None:
+                    # continue after what's already queued: play the FIRST new track
+                    self.q.index = len(self.q.tracks) - len(fresh)
                     self._restore_pos = None
                     self._load_current_locked()
                 else:
                     self.q.save()
         return {"ok": True, "data": {
-            "title": tracks[0].title, "added": len(tracks),
+            "title": fresh[0].title if fresh else tracks[0].title,
+            "added": len(fresh), "skipped": skipped,
             "queue_len": len(self.q.tracks)}}
 
     def _h_search(self, arg: str) -> dict:
@@ -644,13 +831,16 @@ class Daemon:
                     return {"ok": True, "data": {"title": None}}
                 if self.q.index >= n - 1:
                     if self.q.repeat == "all":
+                        self._push_back()
                         self.q.index = 0
                     else:
+                        self._push_back()
                         self.q.index = -1
                         self._state = "idle"
                         self.q.save()
                         return {"ok": True, "data": {"title": None}}
                 else:
+                    self._push_back()
                     self.q.index += 1
                 self._restore_pos = None  # user is changing tracks; drop crash-resume pos
                 self._load_current_locked()
@@ -662,9 +852,31 @@ class Daemon:
             with self._lock:
                 handle = self.player
                 if handle is None or self.q.index < 0:
+                    # after the queue ends, prev can still go back into it
+                    url = self._back_stack.pop() if self._back_stack else None
+                    if url:
+                        i = self._index_of(url)
+                        if i is not None:
+                            self.q.index = i
+                            self._restore_pos = None
+                            self._load_current_locked()
+                            t = self.q.current()
+                            return {"ok": True, "data": {"title": t.title if t else None,
+                                                         "back": True}}
                     return {"ok": True, "data": {"title": None}}
                 pos = handle.get_property("time-pos") or 0.0
-                if self.q.index >= 0 and pos > 5:
+                # prefer walking back through what was actually heard
+                if self._back_stack:
+                    url = self._back_stack.pop()
+                    i = self._index_of(url)
+                    if i is not None:
+                        self.q.index = i
+                        self._restore_pos = None
+                        self._load_current_locked()
+                        t = self.q.current()
+                        return {"ok": True, "data": {"title": t.title if t else None,
+                                                     "back": True}}
+                if pos > 5:
                     handle.command("seek", 0, "absolute")  # restart current track
                     t = self.q.current()
                     return {"ok": True, "data": {"title": t.title if t else None, "restart": True}}
@@ -686,6 +898,7 @@ class Daemon:
             with self._lock:
                 if not (0 <= i < len(self.q.tracks)):
                     return {"ok": False, "error": f"no track #{arg}"}
+                self._push_back()
                 self.q.index = i
                 self._restore_pos = None
                 self._load_current_locked()
@@ -748,11 +961,13 @@ class Daemon:
             return {"ok": False, "error": "speed must be between 0.1 and 4.0"}
         with self._lock:
             self._speed = x
+            self.q.speed = x
             if self.player:
                 try:
                     self.player.set_property("speed", x)
                 except MpvError as e:
                     return {"ok": False, "error": f"player error: {e}"}
+            self.q.save()
         return {"ok": True, "data": {"speed": x}}
 
     def _h_device(self, arg: str = "") -> dict:
@@ -775,6 +990,18 @@ class Daemon:
             return {"ok": True, "data": {"device": arg}}
 
     def _h_download(self, arg: str) -> dict:
+        if arg.strip() == "queue":  # download the whole current queue
+            with self._lock:
+                tracks = list(self.q.tracks)
+            if not tracks:
+                return {"ok": False, "error": "queue is empty"}
+            out_dir = self.cfg.get("download_dir") or os.path.expanduser("~/Downloads/tune")
+            os.makedirs(out_dir, exist_ok=True)
+            ytdl = shutil.which("yt-dlp") or os.path.expanduser("~/.local/bin/yt-dlp")
+            threading.Thread(target=_do_download_queue, args=(ytdl, tracks, out_dir),
+                             daemon=True).start()
+            return {"ok": True, "data": {"title": f"{len(tracks)} tracks",
+                                         "dir": out_dir, "count": len(tracks)}}
         try:
             tracks = self._resolve_all([arg])  # read-only; no _op_lock needed
         except ResolveError as e:
@@ -840,6 +1067,7 @@ class Daemon:
         return {"ok": True, "data": {"lines": lines, "cached": False}}
 
     def _h_seek(self, arg: str) -> dict:
+        command: tuple
         if arg.startswith(("+", "-")):
             command = ("seek", arg)  # relative
         else:
@@ -902,6 +1130,30 @@ class Daemon:
                 self.q.save()
         return {"ok": True}
 
+    def _h_move(self, arg: str) -> dict:
+        """Move a queue item from one position to another (1-based)."""
+        try:
+            frm, to = (int(x) for x in arg.split())
+            frm -= 1
+            to -= 1
+        except (ValueError, AttributeError):
+            return {"ok": False, "error": f"bad move {arg!r} (expected 'from to')"}
+        with self._op_lock:
+            with self._lock:
+                n = len(self.q.tracks)
+                if not (0 <= frm < n) or not (0 <= to < n):
+                    return {"ok": False, "error": f"no track at that position (queue {n})"}
+                track = self.q.tracks.pop(frm)
+                self.q.tracks.insert(to, track)
+                if self.q.index == frm:
+                    self.q.index = to
+                elif frm < self.q.index <= to:
+                    self.q.index -= 1
+                elif to <= self.q.index < frm:
+                    self.q.index += 1
+                self.q.save()
+        return {"ok": True, "data": {"title": track.title}}
+
     def _h_clear(self, _arg: str = "") -> dict:
         with self._op_lock:
             with self._lock:
@@ -926,7 +1178,8 @@ class Daemon:
                 if not self._undo:
                     return {"ok": False, "error": "nothing to undo"}
                 entry = self._undo.pop()
-                if entry[0] == "remove":
+                kind = entry[0]
+                if kind == "remove":
                     _, i, track = entry
                     i = min(i, len(self.q.tracks))
                     self.q.tracks.insert(i, Track(**track))
@@ -934,9 +1187,21 @@ class Daemon:
                         self.q.index += 1
                     self.q.save()
                     return {"ok": True, "data": {"undo": f"restored {track['title']}"}}
+                if kind == "shuffle":
+                    _, tracks = entry
+                    self.q.tracks = [Track(**t) for t in tracks]
+                    self.q.index = min(self.q.index, max(0, len(self.q.tracks) - 1))
+                    self.q.save()
+                    return {"ok": True, "data": {"undo": "un-shuffled the queue"}}
+                # "clear" and "replace": (kind, tracks, index)
                 _, tracks, index = entry
                 self.q.tracks = [Track(**t) for t in tracks]
                 self.q.index = index
+                if index >= 0:
+                    self._restore_pos = None
+                    self._load_current_locked()
+                else:
+                    self._state = "idle"
                 self.q.save()
                 return {"ok": True, "data": {"undo": f"restored {len(tracks)} tracks"}}
 
@@ -983,6 +1248,8 @@ class Daemon:
         with self._lock:
             self.q.shuffle = not self.q.shuffle
             if self.q.shuffle:
+                self._undo.append(("shuffle", [t.as_json() for t in self.q.tracks]))
+                self._undo = self._undo[-20:]
                 self.q.reshuffle_after_current()
             self.q.save()
         return {"ok": True, "data": {"shuffle": self.q.shuffle}}
@@ -995,15 +1262,21 @@ class Daemon:
             self.q.save()
         return {"ok": True, "data": {"repeat": arg}}
 
-    def _h_list(self, _arg: str = "") -> dict:
+    def _h_list(self, arg: str = "") -> dict:
         with self._lock:
+            needle = arg.strip().lower()
+            tracks = self.q.tracks
+            if needle:
+                tracks = [t for t in tracks
+                          if needle in t.title.lower() or needle in t.query.lower()
+                          or needle in t.channel.lower()]
             return {
                 "ok": True,
                 "data": {
                     "index": self.q.index,
                     "tracks": [
                         {"query": t.query, "title": t.title, "duration": t.duration}
-                        for t in self.q.tracks
+                        for t in tracks
                     ],
                 },
             }
@@ -1061,6 +1334,7 @@ class Daemon:
                 with self._lock:
                     self._play_gen += 1
                     self._pending_arg = None
+                    self._clear_back()
                     self._restore_pos = None
                     self.q.tracks = [Track(**f) for f in self._favs]
                     self.q.index = 0
@@ -1091,20 +1365,29 @@ class Daemon:
             with self._lock:
                 if not self.q.tracks:
                     return {"ok": False, "error": "queue is empty — nothing to save"}
-                tracks = [_track_to_dict(t) for t in self.q.tracks]
+                saved = [_track_to_dict(t) for t in self.q.tracks]
             PLAYLIST_DIR.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(tracks, indent=2))
+            tmp.write_text(json.dumps(saved, indent=2))
             os.replace(tmp, path)
-            return {"ok": True, "data": {"name": nm, "count": len(tracks)}}
+            return {"ok": True, "data": {"name": nm, "count": len(saved)}}
         if action == "smart":
             mode = name or "recents"
             if mode == "most-played":
                 ranked = sorted(self._history, key=lambda h: h.get("count", 0), reverse=True)
             elif mode in ("recents", "recent"):
                 ranked = list(self._history)
+            elif mode == "recently-added":
+                ranked = sorted(self._history, key=lambda h: h.get("ts", 0), reverse=True)
+            elif mode.startswith("artist:"):
+                want = mode[len("artist:"):].strip().lower()
+                ranked = [h for h in self._history
+                          if want in (h.get("channel") or "").lower()]
+                if not ranked:
+                    return {"ok": False, "error": f"no history for artist {want!r}"}
             else:
-                return {"ok": False, "error": "smart mode must be 'most-played' or 'recents'"}
+                return {"ok": False, "error":
+                        "smart mode: most-played | recents | recently-added | artist:<name>"}
             if not ranked:
                 return {"ok": False, "error": "no history yet"}
             tracks = [Track(query=h.get("query") or h["title"], title=h["title"],
@@ -1116,6 +1399,7 @@ class Daemon:
                     self._play_gen += 1
                     self._pending_arg = None
                     self._restore_pos = None
+                    self._clear_back()
                     self.q.tracks = tracks
                     self.q.index = 0
                     self.q.shuffle = False
@@ -1133,6 +1417,7 @@ class Daemon:
                     self._play_gen += 1
                     self._pending_arg = None
                     self._restore_pos = None
+                    self._clear_back()
                     self.q.tracks = tracks
                     self.q.index = 0
                     self.q.shuffle = False
@@ -1141,15 +1426,19 @@ class Daemon:
         if action == "add":
             with self._op_lock:
                 with self._lock:
+                    existing = {t.url for t in self.q.tracks}
+                    fresh = [t for t in tracks if t.url not in existing]
+                    skipped = len(tracks) - len(fresh)
                     start_now = self.q.index < 0  # empty OR finished naturally
-                    self.q.tracks.extend(tracks)
-                    if start_now and self._pending_arg is None:
-                        self.q.index = 0
+                    self.q.tracks.extend(fresh)
+                    if start_now and fresh and self._pending_arg is None:
+                        self.q.index = len(self.q.tracks) - len(fresh)
                         self._restore_pos = None
                         self._load_current_locked()
                     else:
                         self.q.save()
-            return {"ok": True, "data": {"name": nm, "count": len(tracks),
+            return {"ok": True, "data": {"name": nm, "count": len(fresh),
+                                         "skipped": skipped,
                                          "queue_len": len(self.q.tracks)}}
         if action == "show":
             return {"ok": True, "data": {
@@ -1189,18 +1478,19 @@ class Daemon:
             return {"ok": False, "error": "config needs a key (e.g. autoplay on)"}
         if len(parts) == 1 or not parts[1].strip():
             return {"ok": True, "data": {"key": key, "value": self.cfg.get(key)}}
-        value: object = parts[1].strip()
+        raw = parts[1].strip()
+        value: object = raw
         old = self.cfg.get(key)
         if isinstance(old, bool):
-            value = value.lower() in ("1", "true", "yes", "on")
+            value = raw.lower() in ("1", "true", "yes", "on")
         elif isinstance(old, int):
             try:
-                value = int(value)
+                value = int(raw)
             except ValueError:
                 return {"ok": False, "error": f"expected an integer for {key}"}
         elif isinstance(old, float):
             try:
-                value = float(value)
+                value = float(raw)
             except ValueError:
                 return {"ok": False, "error": f"expected a number for {key}"}
         self.cfg.set(key, value)
@@ -1267,7 +1557,13 @@ class Daemon:
 
 
 class CtrlHandler(socketserver.StreamRequestHandler):
+    @property
+    def _daemon(self) -> Daemon:
+        # CtrlServer sets daemon_ref before serving; BaseServer doesn't know it.
+        return self.server.daemon_ref  # type: ignore[attr-defined]
+
     def handle(self) -> None:
+        daemon = self._daemon
         while True:
             line = self.rfile.readline()
             if not line:
@@ -1275,13 +1571,13 @@ class CtrlHandler(socketserver.StreamRequestHandler):
             text = line.decode("utf-8", "replace").strip()
             if not text:
                 continue
-            resp = self.server.daemon_ref.dispatch(text)
+            resp = daemon.dispatch(text)
             try:
                 self.wfile.write((json.dumps(resp) + "\n").encode("utf-8"))
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 break  # client gave up and closed; not our problem
-            if self.server.daemon_ref._stop.is_set():
+            if daemon._stop.is_set():
                 break
 
 
@@ -1321,6 +1617,13 @@ def run() -> None:
     threading.Thread(target=daemon._event_loop, daemon=True).start()
     threading.Thread(target=daemon._position_loop, daemon=True).start()
     threading.Thread(target=daemon._sleep_loop, daemon=True).start()
+
+    if daemon.cfg.get("media_keys"):
+        try:
+            from . import mediakeys
+            mediakeys.start(_mk_dispatch(daemon))
+        except Exception as e:
+            log(f"media keys unavailable: {e}")
 
     http_port = int(daemon.cfg.get("http_port") or 0)
     if http_port:

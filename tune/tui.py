@@ -136,11 +136,12 @@ def _loop(stdscr) -> None:
     threading.Thread(target=_poller, daemon=True).start()
 
     # search-mode state
-    mode = "now"                      # "now" | "search" | "cmd" | "theme"
+    mode = "now"                      # "now" | "search" | "cmd" | "theme" | "filter"
     sq, sresults, ssel = "", [], 0
     ssearching, smsg = False, ""
     sbucket: dict = {}
     cmdq, cmdmsg = "", ""
+    qfilter = ""                      # queue filter (f key)
 
     # theme-picker state
     theme_names = list(_THEMES)
@@ -165,7 +166,8 @@ def _loop(stdscr) -> None:
         # paused / idle: freeze the amplifier
 
         # queue selection follows the current track until the user moves it
-        if mode == "now" and ui["qsel_follow"] and status.get("current_index", -1) >= 0:
+        if (mode in ("now", "filter") and ui["qsel_follow"] and not qfilter
+                and status.get("current_index", -1) >= 0):
             ui["qsel"] = status["current_index"]
 
         # collect a finished background search
@@ -180,7 +182,7 @@ def _loop(stdscr) -> None:
         h, w = stdscr.getmaxyx()
         if h > 1 and w > 1:
             _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
-                  amp_t, ui, cmdq, theme_sel, theme_names)
+                  amp_t, ui, cmdq, theme_sel, theme_names, qfilter)
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -193,8 +195,10 @@ def _loop(stdscr) -> None:
         elif mode == "theme":
             mode, theme_sel, theme_saved = _theme_key(
                 ch, mode, theme_sel, theme_names, theme_saved)
+        elif mode == "filter":
+            mode, qfilter = _filter_key(ch, mode, qfilter)
         else:
-            mode = _now_key(ch, mode, status, ui)
+            mode = _now_key(ch, mode, status, ui, qfilter)
         if ui.pop("art", False):
             _show_art(stdscr)
         if mode == "quit":
@@ -226,7 +230,7 @@ def _resolve_key(stdscr, ch: int) -> int:
     return 27
 
 
-def _bg_send(verb: str, arg: str = "") -> None:
+def _bg_send(verb: str, arg: object = "") -> None:
     """Fire a command without blocking the UI (results arrive via status poll)."""
     threading.Thread(target=lambda: send_cmd(verb, arg), daemon=True).start()
 
@@ -240,7 +244,7 @@ def _stop_on_quit() -> None:
         pass  # daemon already gone / unreachable; nothing to stop
 
 
-def _now_key(ch: int, mode: str, status: dict, ui: dict) -> str:
+def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> str:
     if ch == -1:
         return mode
     if ui["lyr_on"]:  # lyrics view — transport works, l/esc exits
@@ -257,23 +261,25 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict) -> str:
         elif ch == ord("-"):
             _bg_send("volume", "-5")
         return mode
-    n = status.get("queue_len", 0)
+    vis = _visible_queue(status, qfilter)
     if ch in (ord("q"), 27):
         mode = "quit"  # sentinel: quit the TUI and stop playback
     elif ch == ord("l"):
         _toggle_lyrics(ui)
+    elif ch == ord("f"):
+        mode = "filter"
     elif ch == curses.KEY_UP:
         ui["qsel"] = max(0, ui["qsel"] - 1)
         ui["qsel_follow"] = False
     elif ch == curses.KEY_DOWN:
-        ui["qsel"] = min(max(0, n - 1), ui["qsel"] + 1)
+        ui["qsel"] = min(max(0, len(vis) - 1), ui["qsel"] + 1)
         ui["qsel_follow"] = False
-    elif ch in (10, 13, curses.KEY_ENTER) and n > 0:
-        _bg_send("playindex", str(ui["qsel"] + 1))
+    elif ch in (10, 13, curses.KEY_ENTER) and vis:
+        _bg_send("playindex", str(vis[min(ui["qsel"], len(vis) - 1)][0] + 1))
         ui["qsel_follow"] = False
-    elif ch == ord("d") and n > 0:
-        _bg_send("remove", str(ui["qsel"] + 1))
-        ui["qsel"] = max(0, min(ui["qsel"], max(0, n - 2)))
+    elif ch == ord("d") and vis:
+        _bg_send("remove", str(vis[min(ui["qsel"], len(vis) - 1)][0] + 1))
+        ui["qsel"] = max(0, min(ui["qsel"], max(0, len(vis) - 2)))
         ui["qsel_follow"] = False
     elif ch == ord(" "):
         _bg_send("toggle")
@@ -356,6 +362,32 @@ def _theme_key(ch, mode, sel, names, saved):
         sel = max(0, sel - 1)
         _apply_theme(names[sel])
     return mode, sel, saved
+
+
+def _visible_queue(status: dict, qfilter: str) -> list[tuple[int, dict]]:
+    """(real_index, track) pairs for the queue, filtered by a substring."""
+    q = status.get("queue") or []
+    needle = qfilter.strip().lower()
+    if not needle:
+        return [(i, t) for i, t in enumerate(q)]
+    return [(i, t) for i, t in enumerate(q)
+            if needle in (t.get("title") or "").lower()
+            or needle in (t.get("query") or "").lower()]
+
+
+def _filter_key(ch, mode, qfilter):
+    """Queue filter: type to filter live, enter keeps it, esc clears+exits."""
+    if ch == -1:
+        return mode, qfilter
+    if ch == 27:
+        return "now", ""
+    if ch in (10, 13, curses.KEY_ENTER):
+        return "now", qfilter
+    if ch in (curses.KEY_BACKSPACE, 127, 8):
+        return mode, qfilter[:-1]
+    if 32 <= ch < 127 and len(qfilter) < 60:
+        return mode, qfilter + chr(ch)
+    return mode, qfilter
 
 
 def _toggle_lyrics(ui: dict) -> None:
@@ -503,20 +535,39 @@ def _cycle_repeat(status: dict) -> None:
 
 def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
           amp_t: float, ui: dict, cmdq: str = "",
-          theme_sel: int = 0, theme_names: list | None = None) -> None:
+          theme_sel: int = 0, theme_names: list | None = None,
+          qfilter: str = "") -> None:
     _draw_header(stdscr, status, w)
     _draw_amp(stdscr, status, amp_t, w)
+    if status.get("error"):
+        try:
+            stdscr.addstr(5, 0, ("[!] " + status["error"])[: w - 1],
+                          curses.color_pair(4) | curses.A_BOLD)
+        except curses.error:
+            pass
     if mode == "search":
         _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg)
     elif mode == "cmd":
-        _draw_queue(stdscr, status, h, w, ui["qsel"])
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
         try:
             stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[: w - 1],
                           curses.A_BOLD | curses.color_pair(3))
         except curses.error:
             pass
+    elif mode == "filter":
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
+        try:
+            stdscr.addstr(5, 0, ("filter: " + qfilter + "_")[: w - 1],
+                          curses.A_BOLD | curses.color_pair(3))
+        except curses.error:
+            pass
+        try:
+            stdscr.addstr(h - 1, 0, "type to filter the queue · enter keep · esc clear"[: w - 1],
+                          curses.color_pair(6) | curses.A_DIM)
+        except curses.error:
+            pass
     elif mode == "theme":
-        _draw_queue(stdscr, status, h, w, ui["qsel"])
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
         _draw_theme_picker(stdscr, h, w, theme_sel, theme_names or list(_THEMES))
         try:
             stdscr.addstr(h - 1, 0, "↑/↓ browse (live) · enter apply · esc cancel"[: w - 1],
@@ -532,7 +583,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         except curses.error:
             pass
     else:
-        _draw_queue(stdscr, status, h, w, ui["qsel"])
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
         try:
             stdscr.addstr(h - 1, 0, _NOW_HELP[: w - 1],
                           curses.color_pair(6) | curses.A_DIM)
@@ -658,21 +709,21 @@ def _draw_header(stdscr, status: dict, w: int) -> None:
         pass
 
 
-def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int) -> None:
-    queue = status.get("queue") or []
+def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = "") -> None:
+    vis = _visible_queue(status, qfilter)  # (real_index, track) pairs
     cur = status.get("current_index", -1)
     top = 6  # below the amplifier row
     bottom = max(top + 1, h - 3)
     page = bottom - top
     if page <= 0:
         return
-    focus = qsel if 0 <= qsel < len(queue) else max(0, cur)
-    start = max(0, min(focus - page // 2, max(0, len(queue) - page)))
-    for i in range(start, min(len(queue), start + page)):
-        t = queue[i]
-        is_cur, is_sel = i == cur, i == qsel
+    focus = qsel if 0 <= qsel < len(vis) else 0
+    start = max(0, min(focus - page // 2, max(0, len(vis) - page)))
+    for k in range(start, min(len(vis), start + page)):
+        real_idx, t = vis[k]
+        is_cur, is_sel = real_idx == cur, k == qsel
         mark = "▶" if is_cur else ("▸" if is_sel else " ")
-        body = f"{mark} {i + 1:2}  {t['title'][: max(0, w - 18)]}"
+        body = f"{mark} {real_idx + 1:2}  {t['title'][: max(0, w - 18)]}"
         text = f"{body:<{max(0, w - 10)}}  {_fmt_time(t.get('duration')):>5}"
         if is_sel and is_cur:
             attr = curses.color_pair(2) | curses.A_REVERSE
@@ -683,7 +734,7 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int) -> None:
         else:
             attr = curses.color_pair(6)
         try:
-            stdscr.addstr(top + (i - start), 0, text[: w - 1], attr)
+            stdscr.addstr(top + (k - start), 0, text[: w - 1], attr)
         except curses.error:
             pass
 

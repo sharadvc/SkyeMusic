@@ -27,35 +27,43 @@ tune                          # full-screen player — press / to search from in
 tune search "song name"       # list YouTube results, then play one
 tune play "song1" "song2"     # play one song, or a whole list at once
 tune play <youtube_playlist_url>   # play a whole YouTube playlist
-tune add "song"               # queue without interrupting
+tune add "song"               # queue without interrupting (dedupes repeats)
 tune pause | resume | toggle
-tune next | prev | stop
+tune next | prev | stop       # prev walks back through what you actually heard
 tune playindex 3              # jump to queue position 3
+tune move 2 1                 # move a queue item between positions (1-based)
 tune volume 60                # 0-130, or relative: volume +5 / volume -5
 tune seek +30                 # relative: +30 / -15, or absolute: 60
-tune list | remove 2 | clear
-tune shuffle                  # toggle
+tune list [filter]            # show the queue, optionally filtered by text
+tune remove 2 | clear
+tune shuffle                  # toggle (avoids same-artist back-to-back)
 tune repeat all | one | off
 tune fav                      # favorite / unfavorite the current track
 tune favs                     # list favorites
 tune favs play                # play your favorites
 tune playlist save <name>     # save the current queue as a named playlist
 tune playlist load <name> | add <name> | show <name> | delete <name> | list
-tune playlist smart most-played | recents   # auto-playlists from your history
+tune playlist smart most-played | recents | recently-added | artist:<name>
 tune sleep 30                 # stop playback after 30 minutes
 tune sleep off                # cancel the sleep timer
 tune lyrics                   # synced karaoke lyrics for the current track
 tune art                      # terminal album art (truecolor)
 tune share                    # copy the current track's URL
-tune speed 1.5                # playback speed (0.1–4.0)
+tune speed 1.5                # playback speed (0.1–4.0, persisted)
 tune device                   # list audio devices (device <name> to select)
 tune download "song"          # save a song as an audio file
-tune history | recents        # recently played
+tune download queue           # download the whole current queue
+tune history [n]              # recently played; add a number to play that entry
 tune stats                    # most-played stats
 tune m3u export <name> [file] # export a playlist to .m3u
 tune m3u import <file> [name] # import a .m3u as a playlist
-tune undo                     # undo the last remove/clear
+tune undo                     # undo remove/clear/play/shuffle
 tune config autoplay on       # smart radio: keep playing similar songs at queue end
+tune config smart_queue on    # keep appending related tracks when the queue runs short
+tune config resume on         # per-track resume (podcast mode)
+tune config intro_skip 20     # skip the first 20s of a never-resumed track
+tune config remote_pin 2468   # PIN-lock the phone remote
+tune config listenbrainz_token abc  # scrobble to ListenBrainz
 tune config theme sunset      # TUI color theme — or press `t` in the TUI to browse all 28
 tune remote                   # show the phone/HTTP remote URL
 tune info                     # details for the current track
@@ -80,6 +88,7 @@ A URL or bare YouTube video id works anywhere a song name does: `tune play <url>
 | `←` / `→` | seek back / forward 10s |
 | `l` | synced karaoke lyrics pane (elapsed part highlighted) |
 | `a` | terminal album art |
+| `f` | filter the queue by text (type live, enter keep, esc clear) |
 | `:` | command bar (e.g. `:volume 50`, `:play search terms`) |
 | `s` | toggle shuffle |
 | `r` | cycle repeat: off → all → one |

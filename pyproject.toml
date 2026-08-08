@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tune"
+version = "0.1.0"
+description = "Terminal music player that streams from YouTube (mpv + yt-dlp, no login, no API key)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["music", "youtube", "cli", "tui", "mpv", "yt-dlp"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+
+# tune itself is pure stdlib. mpv and yt-dlp are external binaries it shells
+# out to (brew install mpv yt-dlp).
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy"]
+media = ["pyobjc-framework-Quartz; sys_platform == 'darwin'"]
+
+[project.scripts]
+tune = "tune.cli:main"
+
+[tool.setuptools]
+packages = ["tune"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["."]
+
+[tool.ruff.lint]
+# E/F/W = pycodestyle core, I = import sorting, UP = pyupgrade, B = bugbear.
+# SIM (simplify) is deliberately off: the code uses explicit try/except around
+# curses draws and nested `with` for lock ordering on purpose.
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # line length is style; we target 100 but don't hard-fail
+    "B905",  # some zip() calls are intentionally unequal (e.g. pairwise)
+]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["tune"]
+strict = false
+# The codebase uses `X | None` liberally without local narrowing (e.g. the
+# optional mpv handle). Disable strict None-following; mypy still catches real
+# type mismatches.
+strict_optional = false
+check_untyped_defs = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true

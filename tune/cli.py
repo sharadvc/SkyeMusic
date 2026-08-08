@@ -61,7 +61,7 @@ def _print_search(d: dict) -> None:
         dur = _fmt_time(r.get("duration"))
         channel = r.get("channel") or ""
         print(f"{i:2}.  {r['title']}  [{dur}]  {channel}")
-    print(f"\nplay one with:  tune play \"<url from list>\"")
+    print("\nplay one with:  tune play \"<url from list>\"")
 
 
 def _print_info(d: dict) -> None:
@@ -197,6 +197,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("seek").add_argument("amount", help="e.g. +30 / -15 / 60")
     sub.add_parser("remove").add_argument("n", type=int, help="queue position (1-based)")
     sub.add_parser("playindex").add_argument("n", type=int, help="jump to queue position (1-based)")
+    mv = sub.add_parser("move", help="move a queue item between positions (1-based)")
+    mv.add_argument("from")
+    mv.add_argument("to")
     sub.add_parser("clear", help="empty the queue")
     sub.add_parser("undo", help="undo the last remove/clear")
     m3u = sub.add_parser("m3u", help="M3U playlist import/export")
@@ -209,11 +212,14 @@ def build_parser() -> argparse.ArgumentParser:
     m3u_import.add_argument("name", nargs="?", default="")
     sub.add_parser("shuffle", help="toggle shuffle")
     sub.add_parser("repeat").add_argument("mode", choices=["all", "one", "off"])
-    sub.add_parser("list", help="show the queue")
+    sub.add_parser("list", help="show the queue").add_argument(
+        "filter", nargs="?", default="", help="only show matching tracks")
     sub.add_parser("status", help="show what's playing")
     sub.add_parser("info", help="show details for the current track")
-    sub.add_parser("history", help="recently played tracks")
-    sub.add_parser("recents", help="recently played (alias for history)")
+    sub.add_parser("history", help="recently played tracks").add_argument(
+        "n", nargs="?", type=int, default=None, help="play the nth entry")
+    sub.add_parser("recents", help="recently played (alias for history)").add_argument(
+        "n", nargs="?", type=int, default=None, help="play the nth entry")
     sub.add_parser("stats", help="most-played stats")
     sub.add_parser("lyrics", help="show synced lyrics for the current track")
     sub.add_parser("art", help="show terminal album art for the current track")
@@ -277,7 +283,7 @@ def run(argv: list[str]) -> int:
         return 0
 
     verb = args.cmd
-    arg = ""
+    arg: object = ""
     if verb == "play":
         arg = args.query  # list of songs
     elif verb == "add":
@@ -306,6 +312,10 @@ def run(argv: list[str]) -> int:
         arg = args.amount
     elif verb in ("remove", "playindex"):
         arg = str(args.n)
+    elif verb == "move":
+        arg = f"{getattr(args, 'from')} {args.to}"
+    elif verb == "list":
+        arg = args.filter
     elif verb == "m3u":
         if args.m3u_action == "export":
             arg = ["export", args.name, args.file]
@@ -317,10 +327,9 @@ def run(argv: list[str]) -> int:
         verb = "quit-daemon"
 
     try:
-        if verb == "play":
-            print(f"… resolving {', '.join(arg)}…", file=sys.stderr, flush=True)
-        elif verb == "add":
-            print(f"… resolving {', '.join(arg)}…", file=sys.stderr, flush=True)
+        if verb in ("play", "add"):
+            names = ", ".join(arg) if isinstance(arg, list) else str(arg)
+            print(f"… resolving {names}…", file=sys.stderr, flush=True)
         elif verb == "search":
             print(f"… searching {arg!r}…", file=sys.stderr, flush=True)
         resp = send_cmd(verb, arg)
@@ -332,6 +341,23 @@ def run(argv: list[str]) -> int:
         return 1
 
     data = resp.get("data") or {}
+    if verb == "history" and args.n:
+        hist = data.get("history") or []
+        n = args.n
+        if not (1 <= n <= len(hist)):
+            print(f"tune: no history entry #{n}", file=sys.stderr)
+            return 1
+        entry = hist[n - 1]
+        try:
+            resp2 = send_cmd("play", entry["url"])
+        except Exception as e:
+            print(f"tune: {e}", file=sys.stderr)
+            return 1
+        if not resp2.get("ok"):
+            print(f"tune: {resp2.get('error', 'unknown error')}", file=sys.stderr)
+            return 1
+        print(f"▶ {entry['title']}")
+        return 0
     if verb == "status":
         _print_status(data)
     elif verb == "list":
@@ -359,7 +385,12 @@ def run(argv: list[str]) -> int:
         extra = f"  (+{data.get('count') - 1} more queued)" if (data.get("count") or 1) > 1 else ""
         print(f"▶ {data.get('title')}{extra}")
     elif verb == "add":
-        print(f"+ queued {data.get('added', 1)}: {data.get('title')}  (queue: {data.get('queue_len')})")
+        added = data.get("added", 0)
+        skipped = data.get("skipped", 0)
+        extra = f"  (skipped {skipped} dup)" if skipped else ""
+        print(f"+ queued {added}: {data.get('title')}  (queue: {data.get('queue_len')}){extra}")
+    elif verb == "move":
+        print(f"↕ moved: {data.get('title')}")
     elif verb == "fav":
         print(f"{'♥' if data.get('fav') else '♡'} {data.get('title')}")
     elif verb == "volume":
@@ -388,3 +419,8 @@ def run(argv: list[str]) -> int:
     elif verb == "prev":
         print(f"▶ {data.get('title') or '(nothing)'}")
     return 0
+
+
+def main() -> int:
+    """Console-script entry point (`tune` after pip/pipx install)."""
+    return run(sys.argv[1:])

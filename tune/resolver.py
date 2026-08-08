@@ -62,13 +62,13 @@ def _fetch(target: str, timeout: int = 30) -> list[dict] | None:
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        raise ResolveError(f"yt-dlp timed out resolving {target!r}")
+        raise ResolveError(f"yt-dlp timed out resolving {target!r}") from None
     if proc.returncode != 0 or not proc.stdout.strip():
         raise ResolveError(proc.stderr.strip() or "no result")
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as e:
-        raise ResolveError(f"yt-dlp returned malformed output: {e}")
+        raise ResolveError(f"yt-dlp returned malformed output: {e}") from e
     if isinstance(data, dict) and data.get("entries"):
         return data["entries"]
     if isinstance(data, dict):
@@ -126,7 +126,7 @@ def resolve_playlist(url: str, timeout: int = 60) -> list[Track]:
     try:
         entries = _fetch(url, timeout)
     except ResolveError as e:
-        raise ResolveError(f"could not resolve playlist {url!r}: {e}")
+        raise ResolveError(f"could not resolve playlist {url!r}: {e}") from e
     tracks = [t for e in entries if (t := _entry_to_track(e, url)) is not None]
     if not tracks:
         raise ResolveError(f"playlist {url!r} has no playable videos")

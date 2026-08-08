@@ -23,7 +23,7 @@ class TuneError(Exception):
 _REPLY_TIMEOUT = 75.0  # cold yt-dlp lookups can take well over 30s
 
 
-def _connect(verb: str, arg: str) -> dict:
+def _connect(verb: str, arg: object) -> dict:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         s.settimeout(5.0)  # keep connect fast so "not up yet" != "slow reply"
@@ -73,7 +73,7 @@ def start_daemon() -> None:
     )
 
 
-def send_cmd(verb: str, arg: str = "") -> dict:
+def send_cmd(verb: str, arg: object = "") -> dict:
     """Send one command and return the daemon's JSON response.
 
     If no daemon is running, start one (detached) and wait for it. Never
