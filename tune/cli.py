@@ -1,0 +1,390 @@
+"""tune CLI front-end: subcommands that talk to the daemon."""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+
+from . import __version__
+from .client import send_cmd
+
+_STATE_MARK = {"playing": "▶", "paused": "⏸", "loading": "…", "idle": "·"}
+
+
+def _fmt_time(sec: float | None) -> str:
+    if sec is None:
+        return "LIVE"
+    sec = max(0, int(sec))
+    return f"{sec // 60}:{sec % 60:02d}"
+
+
+def _print_status(d: dict) -> None:
+    state = d.get("state", "idle")
+    mark = _STATE_MARK.get(state, "·")
+    title = d.get("title")
+    if title:
+        pos = _fmt_time(d.get("position"))
+        dur = _fmt_time(d.get("duration"))
+        line = f"{mark} {state:7} {title}   {pos} / {dur}"
+    else:
+        line = f"{mark} {state:7} (nothing playing)"
+    if d.get("error"):
+        line += f"   [!] {d['error']}"
+    print(line)
+    extra = f" · speed {d.get('speed')}×" if d.get("speed") and d.get("speed") != 1 else ""
+    print(f"    volume {d.get('volume')} · repeat {d.get('repeat')} · "
+          f"shuffle {'on' if d.get('shuffle') else 'off'} · queue {d.get('queue_len')}{extra}")
+
+
+def _print_list(d: dict) -> None:
+    idx = d.get("index", -1)
+    tracks = d.get("tracks", [])
+    if not tracks:
+        print("queue is empty")
+        return
+    for i, t in enumerate(tracks, 1):
+        mark = "▶" if i - 1 == idx else " "
+        dur = _fmt_time(t.get("duration"))
+        print(f"{mark} {i:3}  {t['title']}  [{dur}]")
+    print(f"\n{len(tracks)} track(s) · current #{idx + 1 if idx >= 0 else '-'}")
+
+
+def _print_search(d: dict) -> None:
+    results = d.get("results", [])
+    query = d.get("query", "")
+    if not results:
+        print(f"no results for {query!r}")
+        return
+    print(f"results for {query!r}:\n")
+    for i, r in enumerate(results, 1):
+        dur = _fmt_time(r.get("duration"))
+        channel = r.get("channel") or ""
+        print(f"{i:2}.  {r['title']}  [{dur}]  {channel}")
+    print(f"\nplay one with:  tune play \"<url from list>\"")
+
+
+def _print_info(d: dict) -> None:
+    if not d.get("playing"):
+        print("nothing playing")
+        return
+    print(f"▶ {d['title']}")
+    print(f"   channel:  {d.get('channel') or '—'}")
+    print(f"   url:      {d.get('url')}")
+    print(f"   duration: {_fmt_time(d.get('duration'))}")
+    pos = d.get("position")
+    print(f"   position: {'—' if pos is None else _fmt_time(pos)}")
+    print(f"   queue:    #{d.get('queue_position')} of {d.get('queue_len')}")
+    print(f"   volume:   {d.get('volume')} · repeat: {d.get('repeat')} · "
+          f"shuffle: {'on' if d.get('shuffle') else 'off'}")
+
+
+def _print_favs(d: dict, action: str) -> None:
+    if action == "play":
+        print(f"▶ playing {d.get('count', 0)} favorites")
+        return
+    tracks = d.get("tracks", [])
+    if not tracks:
+        print("no favorites yet — tune fav while a song plays")
+        return
+    mark = "  ♥ now playing" if d.get("current_is_fav") else ""
+    print(f"favorites ({len(tracks)}){mark}")
+    for i, t in enumerate(tracks, 1):
+        print(f"{i:2}.  {t['title']}  [{_fmt_time(t.get('duration'))}]")
+    print("\nplay them with:  tune favs play")
+
+
+def _print_playlist(d: dict, action: str) -> None:
+    if action == "list":
+        names = d.get("playlists", [])
+        if not names:
+            print("no saved playlists yet — tune playlist save <name>")
+            return
+        print("saved playlists:")
+        for n in names:
+            print(f"  {n}")
+        return
+    name = d.get("name", "")
+    if action == "save":
+        print(f"✓ saved '{name}' ({d.get('count')} tracks)")
+    elif action == "load":
+        print(f"▶ loaded '{name}' ({d.get('count')} tracks)")
+    elif action == "add":
+        print(f"+ added {d.get('count')} from '{name}'  (queue: {d.get('queue_len')})")
+    elif action == "delete":
+        print(f"✗ deleted '{name}'")
+    elif action == "smart":
+        print(f"▶ smart playlist '{name}' ({d.get('count')} tracks)")
+    elif action == "show":
+        tracks = d.get("tracks", [])
+        print(f"playlist '{name}' ({len(tracks)} tracks):")
+        for i, t in enumerate(tracks, 1):
+            print(f"{i:2}.  {t['title']}  [{_fmt_time(t.get('duration'))}]")
+
+
+def _print_sleep(d: dict) -> None:
+    rem = d.get("sleep_remaining")
+    if rem is None:
+        print("sleep timer: off")
+    else:
+        m, s = divmod(int(rem), 60)
+        print(f"sleep timer: {m}:{s:02d} remaining")
+
+
+def _print_devices(d: dict) -> None:
+    devices = d.get("devices") or []
+    if d.get("device") is not None:
+        print(f"audio device: {d.get('device')}")
+    if not devices:
+        return
+    print("audio devices:")
+    for dev in devices:
+        mark = "▶" if dev.get("name") == d.get("current") else " "
+        print(f"{mark}  {dev.get('name')}   {dev.get('description')}")
+    print("\nselect one with:  tune device <name>")
+
+
+def _print_history(d: dict) -> None:
+    hist = d.get("history") or []
+    if not hist:
+        print("no history yet — play something")
+        return
+    for i, h in enumerate(hist[:20], 1):
+        cnt = h.get("count", 1)
+        print(f"{i:2}.  {h['title']}  [{cnt}×]")
+
+
+def _print_stats(d: dict) -> None:
+    most = d.get("most_played") or []
+    print(f"total plays: {d.get('total_plays', 0)}")
+    if not most:
+        print("no plays recorded yet")
+        return
+    print("\nmost played:")
+    for i, h in enumerate(most[:10], 1):
+        print(f"{i:2}.  {h['title']}  [{h.get('count', 1)}×]")
+
+
+def _print_lyrics(d: dict) -> None:
+    lines = d.get("lines") or []
+    if not lines:
+        print(d.get("note") or "no lyrics available")
+        return
+    for ln in lines:
+        print(ln["text"])
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="tune", description="terminal music player (YouTube, no login)")
+    p.add_argument("--version", action="version", version=f"tune {__version__}")
+    sub = p.add_subparsers(dest="cmd")
+    sub.add_parser("daemon", help="run the background player daemon (internal)")
+    sub.add_parser("play").add_argument("query", nargs="+", help="song(s) to search & play now")
+    sub.add_parser("add").add_argument("query", nargs="+", help="song(s) to queue (keep playing)")
+    sub.add_parser("search").add_argument("query", help="search YouTube and list results")
+    sub.add_parser("pause", help="pause playback")
+    sub.add_parser("resume", help="resume playback")
+    sub.add_parser("toggle", help="play/pause toggle")
+    sub.add_parser("next", help="play next track")
+    sub.add_parser("prev", help="play previous track")
+    sub.add_parser("stop", help="stop playback (queue kept)")
+    sub.add_parser("volume").add_argument("amount", help="0-130, or +5 / -5")
+    sub.add_parser("speed").add_argument("x", help="playback speed, e.g. 1.5 / 0.8 / 1")
+    sub.add_parser("device").add_argument("name", nargs="?", default="",
+                                          help="audio device name (omit to list)")
+    sub.add_parser("download").add_argument("song", help="download a song as audio")
+    sub.add_parser("seek").add_argument("amount", help="e.g. +30 / -15 / 60")
+    sub.add_parser("remove").add_argument("n", type=int, help="queue position (1-based)")
+    sub.add_parser("playindex").add_argument("n", type=int, help="jump to queue position (1-based)")
+    sub.add_parser("clear", help="empty the queue")
+    sub.add_parser("undo", help="undo the last remove/clear")
+    m3u = sub.add_parser("m3u", help="M3U playlist import/export")
+    m3u_sub = m3u.add_subparsers(dest="m3u_action", required=True)
+    m3u_export = m3u_sub.add_parser("export")
+    m3u_export.add_argument("name")
+    m3u_export.add_argument("file", nargs="?", default="")
+    m3u_import = m3u_sub.add_parser("import")
+    m3u_import.add_argument("file")
+    m3u_import.add_argument("name", nargs="?", default="")
+    sub.add_parser("shuffle", help="toggle shuffle")
+    sub.add_parser("repeat").add_argument("mode", choices=["all", "one", "off"])
+    sub.add_parser("list", help="show the queue")
+    sub.add_parser("status", help="show what's playing")
+    sub.add_parser("info", help="show details for the current track")
+    sub.add_parser("history", help="recently played tracks")
+    sub.add_parser("recents", help="recently played (alias for history)")
+    sub.add_parser("stats", help="most-played stats")
+    sub.add_parser("lyrics", help="show synced lyrics for the current track")
+    sub.add_parser("art", help="show terminal album art for the current track")
+    sub.add_parser("share", help="copy the current track's URL to the clipboard")
+    sub.add_parser("remote", help="show the phone/HTTP remote URL")
+    pl = sub.add_parser("playlist", help="manage named playlists")
+    pl.add_argument("action",
+                    choices=["save", "load", "add", "show", "delete", "list", "smart"])
+    pl.add_argument("name", nargs="?", default="", help="playlist name, or smart mode")
+    sub.add_parser("fav", help="favorite / unfavorite the current track")
+    favs = sub.add_parser("favs", help="show favorites")
+    favs.add_argument("action", nargs="?", choices=["play"], default="", help="play favorites")
+    sub.add_parser("sleep").add_argument("minutes", nargs="?", default="",
+                                         help="minutes, or 'off' to cancel")
+    sub.add_parser("config").add_argument("key_value", nargs="+",
+                                          help="config key, or 'key value' (e.g. autoplay on)")
+    sub.add_parser("quit", help="stop the daemon and player")
+    return p
+
+
+def run(argv: list[str]) -> int:
+    p = build_parser()
+    args = p.parse_args(argv)
+
+    if args.cmd is None:
+        from .tui import run as tui_run
+        tui_run()
+        return 0
+    if args.cmd == "daemon":
+        from .daemon import run as daemon_run
+        daemon_run()
+        return 0
+    if args.cmd == "share":
+        try:
+            resp = send_cmd("info")
+            url = (resp.get("data") or {}).get("url") if resp.get("ok") else None
+            if not url:
+                print("tune: nothing playing to share", file=sys.stderr)
+                return 1
+            subprocess.run(["pbcopy"], input=url.encode())
+            print(f"✓ copied {url}")
+        except Exception as e:
+            print(f"tune: {e}", file=sys.stderr)
+            return 1
+        return 0
+    if args.cmd == "remote":
+        try:
+            resp = send_cmd("remote")
+            port = (resp.get("data") or {}).get("port")
+            if not port:
+                print("tune: remote control is disabled (config http_port 0)", file=sys.stderr)
+                return 1
+            print(f"remote control:\n  http://localhost:{port}")
+            ip = subprocess.run(["ipconfig", "getifaddr", "en0"],
+                                capture_output=True, text=True).stdout.strip()
+            if ip:
+                print(f"  http://{ip}:{port}   (phone on the same Wi-Fi)")
+        except Exception as e:
+            print(f"tune: {e}", file=sys.stderr)
+            return 1
+        return 0
+
+    verb = args.cmd
+    arg = ""
+    if verb == "play":
+        arg = args.query  # list of songs
+    elif verb == "add":
+        arg = args.query  # list of songs
+    elif verb == "search":
+        arg = args.query
+    elif verb == "playlist":
+        arg = [args.action, args.name]
+    elif verb == "recents":
+        verb = "history"
+    elif verb == "favs":
+        arg = args.action  # "" or "play"
+    elif verb == "sleep":
+        arg = args.minutes  # "" / "30" / "off"
+    elif verb == "config":
+        arg = " ".join(args.key_value)
+    elif verb == "volume":
+        arg = args.amount
+    elif verb == "speed":
+        arg = args.x
+    elif verb == "device":
+        arg = args.name
+    elif verb == "download":
+        arg = args.song
+    elif verb == "seek":
+        arg = args.amount
+    elif verb in ("remove", "playindex"):
+        arg = str(args.n)
+    elif verb == "m3u":
+        if args.m3u_action == "export":
+            arg = ["export", args.name, args.file]
+        else:
+            arg = ["import", args.file, args.name]
+    elif verb == "repeat":
+        arg = args.mode
+    elif verb == "quit":
+        verb = "quit-daemon"
+
+    try:
+        if verb == "play":
+            print(f"… resolving {', '.join(arg)}…", file=sys.stderr, flush=True)
+        elif verb == "add":
+            print(f"… resolving {', '.join(arg)}…", file=sys.stderr, flush=True)
+        elif verb == "search":
+            print(f"… searching {arg!r}…", file=sys.stderr, flush=True)
+        resp = send_cmd(verb, arg)
+    except Exception as e:
+        print(f"tune: {e}", file=sys.stderr)
+        return 1
+    if not resp.get("ok"):
+        print(f"tune: {resp.get('error', 'unknown error')}", file=sys.stderr)
+        return 1
+
+    data = resp.get("data") or {}
+    if verb == "status":
+        _print_status(data)
+    elif verb == "list":
+        _print_list(data)
+    elif verb == "search":
+        _print_search(data)
+    elif verb == "info":
+        _print_info(data)
+    elif verb == "playlist":
+        _print_playlist(data, args.action)
+    elif verb == "favs":
+        _print_favs(data, args.action)
+    elif verb == "sleep":
+        _print_sleep(data)
+    elif verb == "config":
+        print(f"{data.get('key')} = {data.get('value')}")
+    elif verb == "undo":
+        print(f"↩ {data.get('undo')}")
+    elif verb == "m3u":
+        if args.m3u_action == "export":
+            print(f"✓ exported {data.get('count')} tracks → {data.get('file')}")
+        else:
+            print(f"✓ imported {data.get('count')} tracks as '{data.get('name')}'")
+    elif verb == "play":
+        extra = f"  (+{data.get('count') - 1} more queued)" if (data.get("count") or 1) > 1 else ""
+        print(f"▶ {data.get('title')}{extra}")
+    elif verb == "add":
+        print(f"+ queued {data.get('added', 1)}: {data.get('title')}  (queue: {data.get('queue_len')})")
+    elif verb == "fav":
+        print(f"{'♥' if data.get('fav') else '♡'} {data.get('title')}")
+    elif verb == "volume":
+        print(f"volume {data.get('volume')}")
+    elif verb == "speed":
+        print(f"speed {data.get('speed')}×")
+    elif verb == "device":
+        _print_devices(data)
+    elif verb == "download":
+        print(f"⤓ downloading {data.get('title')} → {data.get('dir')}")
+    elif verb == "history":
+        _print_history(data)
+    elif verb == "stats":
+        _print_stats(data)
+    elif verb == "lyrics":
+        _print_lyrics(data)
+    elif verb == "art":
+        for ln in data.get("lines") or []:
+            print(ln)
+    elif verb == "repeat":
+        print(f"repeat {data.get('repeat')}")
+    elif verb == "shuffle":
+        print(f"shuffle {'on' if data.get('shuffle') else 'off'}")
+    elif verb in ("next", "playindex"):
+        print(f"▶ {data.get('title') or '(end of queue)'}")
+    elif verb == "prev":
+        print(f"▶ {data.get('title') or '(nothing)'}")
+    return 0

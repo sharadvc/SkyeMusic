@@ -1,0 +1,16 @@
+#!/bin/bash
+# tune — play music in the terminal (streams from YouTube, no login).
+# Locates the project root even when invoked through a symlink.
+set -euo pipefail
+
+SELF="${BASH_SOURCE[0]}"
+if [ -L "$SELF" ]; then
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+fi
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m tune "$@"

@@ -1,0 +1,112 @@
+# tune
+
+A terminal music player that streams from YouTube. **No login, no API key.**
+Search any song by name and control playback like a real player — from any shell.
+
+Built on [mpv](https://github.com/mpv-player/mpv) + [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+Pure Python stdlib — zero pip dependencies.
+
+## Requirements
+
+- `mpv` (audio backend): `brew install mpv`
+- `yt-dlp` (YouTube lookup): `brew install yt-dlp` (or `pipx install yt-dlp`)
+
+## Install
+
+```sh
+chmod +x bin/tune
+ln -s "$PWD/bin/tune" ~/.local/bin/tune   # ~/.local/bin should be on PATH
+```
+
+The first command auto-starts a background daemon; everything else just talks to it.
+
+## Usage
+
+```sh
+tune                          # full-screen player — press / to search from inside it
+tune search "song name"       # list YouTube results, then play one
+tune play "song1" "song2"     # play one song, or a whole list at once
+tune play <youtube_playlist_url>   # play a whole YouTube playlist
+tune add "song"               # queue without interrupting
+tune pause | resume | toggle
+tune next | prev | stop
+tune playindex 3              # jump to queue position 3
+tune volume 60                # 0-130, or relative: volume +5 / volume -5
+tune seek +30                 # relative: +30 / -15, or absolute: 60
+tune list | remove 2 | clear
+tune shuffle                  # toggle
+tune repeat all | one | off
+tune fav                      # favorite / unfavorite the current track
+tune favs                     # list favorites
+tune favs play                # play your favorites
+tune playlist save <name>     # save the current queue as a named playlist
+tune playlist load <name> | add <name> | show <name> | delete <name> | list
+tune playlist smart most-played | recents   # auto-playlists from your history
+tune sleep 30                 # stop playback after 30 minutes
+tune sleep off                # cancel the sleep timer
+tune lyrics                   # synced karaoke lyrics for the current track
+tune art                      # terminal album art (truecolor)
+tune share                    # copy the current track's URL
+tune speed 1.5                # playback speed (0.1–4.0)
+tune device                   # list audio devices (device <name> to select)
+tune download "song"          # save a song as an audio file
+tune history | recents        # recently played
+tune stats                    # most-played stats
+tune m3u export <name> [file] # export a playlist to .m3u
+tune m3u import <file> [name] # import a .m3u as a playlist
+tune undo                     # undo the last remove/clear
+tune config autoplay on       # smart radio: keep playing similar songs at queue end
+tune config theme sunset      # TUI color theme (default/ocean/sunset/mono)
+tune remote                   # show the phone/HTTP remote URL
+tune info                     # details for the current track
+tune status                   # now playing + progress
+tune quit                     # stop the daemon and player
+```
+
+A URL or bare YouTube video id works anywhere a song name does: `tune play <url>`.
+
+## TUI keys
+
+| Key | Action |
+| --- | --- |
+| `/` | search YouTube (type a query, enter, pick a result) |
+| `space` | play / pause |
+| `n` / `p` | next / previous track |
+| `↑` / `↓` | select a row in the queue |
+| `d` | remove the selected queue row |
+| `enter` | jump to the selected queue row |
+| `+` / `-` | volume up / down (5) |
+| `[` / `]` | slow down / speed up (10%) |
+| `←` / `→` | seek back / forward 10s |
+| `l` | synced karaoke lyrics pane (elapsed part highlighted) |
+| `a` | terminal album art |
+| `:` | command bar (e.g. `:volume 50`, `:play search terms`) |
+| `s` | toggle shuffle |
+| `r` | cycle repeat: off → all → one |
+| `q` / `Esc` | quit the TUI (music keeps playing) |
+
+A live animated equalizer shows below the progress bar — it bounces while
+playing, freezes on pause, and lies flat when idle.
+
+In search mode: `enter` plays the highlighted result, `tab` adds it to the queue,
+`↑/↓` move, `backspace` edits, `esc` clears the query or goes back. Every other
+key types into the search box. Typing a leading `/` or `search ` is optional —
+`/search coldplay`, `/ coldplay`, and `coldplay` all search the same thing.
+
+## How it works
+
+- A background **daemon** owns one `mpv` process (audio-only, `--input-ipc-server`) and the
+  song queue, persisted to `~/.config/tune/queue.json`.
+- Search results and resolved songs are **cached** in the daemon for 10 minutes, so replaying
+  a song or re-searching a query is instant (repeated `play`/`search` return in ~0.1 s).
+- Tracks finish → the queue auto-advances. If mpv crashes, the daemon respawns it and
+  resumes at the last position. If the daemon dies, the next command (or the TUI's
+  background poller) restarts it with the queue intact — the TUI never freezes.
+- `tune` (CLI) and the TUI are thin clients over a local Unix socket —
+  control it from any shell while music keeps playing.
+
+## Config / state
+
+- `~/.config/tune/queue.json` — queue, volume, repeat, shuffle, last position
+- `~/.config/tune/tune.log` — daemon log
+- `$TMPDIR/tune-ctrl.sock`, `$TMPDIR/tune-mpv.sock` — control + mpv IPC sockets
