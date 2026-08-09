@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,7 +21,7 @@ class TestDaemonHandlers(unittest.TestCase):
 
     def test_add_dedupes(self):
         self.d.q.tracks = [T("u1", "First")]
-        self.d._resolve_all = lambda args: [T("u1", "First"), T("u2", "Second")]
+        self.d._resolve_all = lambda args, fast=False: [T("u1", "First"), T("u2", "Second")]
         resp = self.d._h_add("song")
         self.assertTrue(resp["ok"])
         self.assertEqual(resp["data"]["added"], 1)
@@ -31,7 +32,7 @@ class TestDaemonHandlers(unittest.TestCase):
         # queue finished (index -1) -> add should start playback
         self.d.q.tracks = [T("u1", "A")]
         self.d.q.index = -1
-        self.d._resolve_all = lambda args: [T("u2", "B")]
+        self.d._resolve_all = lambda args, fast=False: [T("u2", "B")]
         resp = self.d._h_add("song")
         self.assertTrue(resp["ok"])
         self.assertEqual(self.d.q.index, 1)
@@ -117,12 +118,52 @@ class TestDaemonHandlers(unittest.TestCase):
         self.d.q.tracks = [T("u1", "A"), T("u2", "B")]
         self.d.q.index = 1
         self.d._back_stack = ["u0"]
-        self.d._resolve_all = lambda args: [T("u9", "New")]
+        self.d._resolve_all = lambda args, fast=False: [T("u9", "New")]
         resp = self.d._h_play("song")
         self.assertTrue(resp["ok"])
         self.assertEqual(self.d.q.current().url, "u9")
         self.assertEqual(self.d._back_stack, [])
         self.assertEqual(self.d._undo[-1][0], "replace")
+
+    def test_fast_path_placeholder_for_url(self):
+        # a direct URL is handed to mpv immediately (no yt-dlp), then enriched
+        tracks = self.d._tracks_for_arg("https://www.youtube.com/watch?v=abc", fast=True)
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0].url, "https://www.youtube.com/watch?v=abc")
+        self.assertIn(tracks[0].url, self.d._pending_enrich)
+
+    def test_placeholder_title_shortened(self):
+        t = self.d._placeholder_track("https://www.youtube.com/watch?v=abcDEF12345")
+        self.assertTrue(t.title.startswith("youtube:"))
+
+    def test_enrich_placeholder_updates_track(self):
+        url = "https://www.youtube.com/watch?v=abc"
+        self.d.q.tracks = [self.d._placeholder_track(url)]
+        self.d._cached_resolve = lambda arg: T(url, "Real Title", "Artist")
+        self.d._enrich_placeholder(url)
+        t = self.d.q.tracks[0]
+        self.assertEqual(t.title, "Real Title")
+        self.assertEqual(t.channel, "Artist")
+        self.assertNotIn(url, self.d._pending_enrich)
+
+    def test_cached_direct(self):
+        self.d._direct_cache["u1"] = (time.time(), "https://stream.example/1")
+        self.assertEqual(self.d._cached_direct("u1"), "https://stream.example/1")
+
+    def test_cached_direct_expired(self):
+        self.d._direct_cache["u1"] = (time.time() - 99999, "https://stale.example/1")
+        self.assertIsNone(self.d._cached_direct("u1"))
+        self.assertNotIn("u1", self.d._direct_cache)
+
+    def test_prefetch_next_locked_targets_next_two(self):
+        import tune.daemon as D
+        seen = []
+        D.get_direct_url = lambda url: seen.append(url) or "https://stream.example/x"
+        self.d.q.tracks = [T("u1", "A"), T("u2", "B"), T("u3", "C")]
+        self.d.q.index = 0
+        self.d._prefetch_direct = lambda url: seen.append(url)
+        self.d._prefetch_next_locked()
+        self.assertEqual(seen, ["u2", "u3"])
 
 
 if __name__ == "__main__":

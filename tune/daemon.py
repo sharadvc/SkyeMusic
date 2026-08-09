@@ -44,6 +44,8 @@ from .queue import (
 )
 from .resolver import (
     ResolveError,
+    _is_url_or_id,
+    get_direct_url,
     is_playlist_url,
     resolve,
     resolve_playlist,
@@ -143,10 +145,15 @@ class Daemon:
         # resolve/search caches: key -> (timestamp, value); no lock held during yt-dlp
         self._resolve_cache: dict[str, tuple[float, Track]] = {}
         self._search_cache: dict[str, tuple[float, list]] = {}
-        self._cache_ttl = 600.0
-        self._cache_max = 200
+        self._cache_ttl = 3600.0  # resolve/search results stay fresh for an hour
+        self._cache_max = 400
         self._op_lock = threading.Lock()  # serializes queue mutations (play/add/next/...)
         self._play_gen = 0  # bumps on every queue-replacing action; stale plays don't apply
+        self._pending_enrich: set[str] = set()  # urls whose metadata is still loading
+        self._direct_cache: dict[str, tuple[float, str]] = {}  # watch url -> direct stream
+        self._direct_ttl = 1800.0  # direct stream URLs are prefetched for ~30 min
+        self._last_load_url: str | None = None
+        self._last_load_was_direct = False
         self._sq_running = False  # one smart-queue refill at a time
         self._sleep_deadline: float | None = None  # time.monotonic deadline for sleep timer
         self._favs: list[dict] = self._load_favorites()
@@ -227,12 +234,48 @@ class Daemon:
         self._error = None
         self._error_streak = 0
         self._state = "loading"
+        direct = self._cached_direct(track.url)
+        self._last_load_url = track.url
+        self._last_load_was_direct = direct is not None
+        if direct:
+            log(f"loading direct stream: {track.url}")
         try:
-            self.player.command("loadfile", track.url, "replace")
+            self.player.command("loadfile", direct or track.url, "replace")
         except MpvError as e:
             self._error = str(e)
             self._state = "idle"
         self.q.save()
+
+    def _cached_direct(self, url: str) -> str | None:
+        with self._lock:
+            hit = self._direct_cache.get(url)
+            if hit and time.time() - hit[0] < self._direct_ttl:
+                return hit[1]
+            self._direct_cache.pop(url, None)
+            return None
+
+    def _prefetch_next_locked(self) -> None:
+        """Prefetch direct URLs for the next couple of tracks so a manual or
+        automatic advance starts almost instantly (mpv skips its yt-dlp pass)."""
+        idx = self.q.index
+        for k in (idx + 1, idx + 2):
+            if 0 <= k < len(self.q.tracks):
+                url = self.q.tracks[k].url
+                if self._cached_direct(url) is None:
+                    threading.Thread(target=self._prefetch_direct, args=(url,),
+                                     daemon=True).start()
+
+    def _prefetch_direct(self, url: str) -> None:
+        try:
+            direct = get_direct_url(url)
+        except ResolveError as e:
+            log(f"prefetch direct failed for {url}: {e}")
+            return
+        with self._lock:
+            self._direct_cache[url] = (time.time(), direct)
+            log(f"prefetch direct ok: {url}")
+            if len(self._direct_cache) > 50:
+                self._direct_cache.pop(next(iter(self._direct_cache)), None)
 
     def _advance_locked(self, *, skip_error: bool = False) -> None:
         """Move to the next track on EOF/error, honoring repeat mode."""
@@ -331,7 +374,9 @@ class Daemon:
                             self.player.set_property("speed", self._speed)
                         except MpvError:
                             pass
+                    self._sync_title_from_mpv_locked()
                     self._on_track_loaded_locked()
+                    self._prefetch_next_locked()
                     self._maybe_smart_queue_locked()
             elif kind == "idle":
                 with self._lock:
@@ -360,6 +405,12 @@ class Daemon:
                 self._record_position_locked()
                 self._advance_locked()
             elif reason == "error":
+                if self._last_load_was_direct and self._last_load_url:
+                    # the prefetched direct stream expired; retry with the watch URL
+                    self._direct_cache.pop(self._last_load_url, None)
+                    self._last_load_was_direct = False
+                    self._load_current_locked()
+                    return
                 self._error_streak += 1
                 if self._error_streak >= 3:
                     self._error = "3 consecutive tracks failed to play"
@@ -432,6 +483,19 @@ class Daemon:
             self.q.positions[now.url] = max(0.0, self._last_pos)
             if len(self.q.positions) > 500:
                 self.q.positions.pop(next(iter(self.q.positions)), None)
+
+    def _sync_title_from_mpv_locked(self) -> None:
+        """Fill a placeholder track's title from mpv (it already resolved the
+        stream), so history/status show the real name without a yt-dlp call."""
+        now = self.q.current()
+        if now is None or self.player is None or now.url not in self._pending_enrich:
+            return
+        if self._last_load_was_direct:
+            return  # mpv's media-title is the stream URL; enrich fills the real one
+        title = self.player.get_property("media-title")
+        if isinstance(title, str) and title.strip():
+            now.title = title.strip()
+            self.q.save()
 
     def _maybe_smart_queue_locked(self) -> None:
         """If the queue is nearly empty and smart_queue is on, refill it."""
@@ -618,11 +682,61 @@ class Daemon:
     def _playlist_path(self, name: str):
         return PLAYLIST_DIR / f"{self._playlist_name(name)}.json"
 
-    def _tracks_for_arg(self, arg: str) -> list[Track]:
-        """One argument -> list of tracks (playlist URL resolves to many)."""
+    def _tracks_for_arg(self, arg: str, fast: bool = False) -> list[Track]:
+        """One argument -> list of tracks (playlist URL resolves to many).
+
+        With `fast=True`, a direct URL / video id becomes a placeholder Track
+        immediately — mpv can play it without a yt-dlp lookup, so playback
+        starts now and the real metadata is filled in afterwards. Queries and
+        playlists always resolve fully (they need yt-dlp to find videos).
+        """
         if is_playlist_url(arg):
             return resolve_playlist(arg)
+        if fast and _is_url_or_id(arg):
+            return [self._placeholder_track(arg)]
         return [self._cached_resolve(arg)]
+
+    def _placeholder_track(self, arg: str) -> Track:
+        self._pending_enrich.add(arg)
+        return Track(query=arg, title=self._short_label(arg), url=arg,
+                     duration=None, channel="")
+
+    def _short_label(self, arg: str) -> str:
+        if "://" in arg:
+            m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", arg)
+            if m:
+                return f"youtube:{m.group(1)}"
+            return (arg.split("://", 1)[1] or arg)[:46]
+        return arg[:46]
+
+    def _spawn_enrich(self, tracks) -> None:
+        """Backfill placeholder tracks with real metadata (background)."""
+        for t in tracks:
+            if t.url in self._pending_enrich:
+                threading.Thread(target=self._enrich_placeholder, args=(t.url,),
+                                 daemon=True).start()
+
+    def _enrich_placeholder(self, url: str) -> None:
+        try:
+            track = self._cached_resolve(url)  # cache-hit if this came from search
+        except ResolveError:
+            self._pending_enrich.discard(url)
+            return
+        with self._op_lock:
+            with self._lock:
+                for t in self.q.tracks:
+                    if t.url == url and url in self._pending_enrich:
+                        t.query, t.title = track.query, track.title
+                        t.channel, t.duration = track.channel or "", track.duration
+                        self.q.save()
+                        break
+                self._pending_enrich.discard(url)
+                for h in self._history:
+                    if h.get("url") == url:
+                        h["title"] = track.title
+                        h["channel"] = track.channel or ""
+                        h["duration"] = track.duration
+                self._save_history()
 
     # --- command handlers ---------------------------------------------------
 
@@ -687,18 +801,18 @@ class Daemon:
     def _h_ping(self, _arg: str = "") -> dict:
         return {"ok": True, "data": {"version": __version__, "state": self._state}}
 
-    def _resolve_all(self, args: list[str]) -> list[Track]:
+    def _resolve_all(self, args: list[str], fast: bool = False) -> list[Track]:
         """Resolve several queries/URLs into a flat track list (parallel when >1).
 
         Individual failures are logged and skipped so one bad song doesn't
         abort the rest; only a total failure raises.
         """
         if len(args) == 1:
-            return self._tracks_for_arg(args[0])
+            return self._tracks_for_arg(args[0], fast=fast)
         results: list[Track] = []
         errors: list[str] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-            futs = [ex.submit(self._tracks_for_arg, a) for a in args]
+            futs = [ex.submit(self._tracks_for_arg, a, fast=fast) for a in args]
             for fut in concurrent.futures.as_completed(futs):
                 try:
                     results.extend(fut.result())
@@ -752,7 +866,7 @@ class Daemon:
                         pass
                 self.q.save()
         try:
-            tracks = self._resolve_all(args)
+            tracks = self._resolve_all(args, fast=True)
         except ResolveError as e:
             with self._op_lock:
                 with self._lock:
@@ -779,6 +893,7 @@ class Daemon:
                 self.q.tracks = tracks
                 self.q.index = 0
                 self._load_current_locked()
+        self._spawn_enrich(tracks)
         return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks)}}
 
     def _h_add(self, arg) -> dict:
@@ -787,7 +902,7 @@ class Daemon:
             return {"ok": False, "error": "empty add request"}
         self._wait_pending_play()  # don't race a play that cleared the queue
         try:
-            tracks = self._resolve_all(args)  # slow part; no _op_lock held
+            tracks = self._resolve_all(args, fast=True)  # URLs start instantly
         except ResolveError as e:
             return {"ok": False, "error": str(e)}
         if not tracks:
@@ -806,6 +921,7 @@ class Daemon:
                     self._load_current_locked()
                 else:
                     self.q.save()
+        self._spawn_enrich(fresh)
         return {"ok": True, "data": {
             "title": fresh[0].title if fresh else tracks[0].title,
             "added": len(fresh), "skipped": skipped,
@@ -821,6 +937,13 @@ class Daemon:
                 for t in results
             ]
             self._cache_put(self._search_cache, arg, data)
+            # seed the resolve cache so playing a result is instant (no yt-dlp)
+            for r in data:
+                if r.get("url"):
+                    self._cache_put(
+                        self._resolve_cache, r["url"],
+                        Track(query=r["url"], title=r["title"], url=r["url"],
+                              duration=r.get("duration"), channel=r.get("channel") or ""))
         return {"ok": True, "data": {"query": arg, "results": data}}
 
     def _h_next(self, _arg: str = "") -> dict:

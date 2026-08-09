@@ -52,6 +52,14 @@ mypy tune
 - **Lock ordering:** always acquire `self._op_lock` BEFORE `self._lock` (never
   the reverse) to avoid deadlocks. The slow yt-dlp work happens without holding
   either lock. `_play_gen` lets a newer `play` supersede a slower one.
+- **Low latency:** direct URLs/video-ids get a placeholder Track and are handed
+  to mpv immediately (no yt-dlp wait); the real title comes from mpv's own
+  `media-title`, and channel/duration are backfilled in the background
+  (`_pending_enrich`). The next track's *direct stream URL* is prefetched during
+  the current one (`_direct_cache`) so `next`/advance start in ~0.4s. All
+  daemon-side yt-dlp is capped to 2 concurrent calls (`_YTDLP_SEM` in
+  `resolver.py`) — YouTube rate-limits parallel lookups and each call can
+  balloon to ~40s when throttled.
 - **Config** (`tune/config.py`) is a flat dict of DEFAULTS; `_h_config` coerces
   values based on the existing type (bool/int/float/string).
 - **The daemon is stateful:** after editing it, `tune quit` then any command to

@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -18,6 +19,10 @@ from .queue import Track
 
 # A bare 11-char YouTube video id (yt-dlp accepts these directly).
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+# Cap concurrent yt-dlp subprocesses: YouTube rate-limits parallel lookups from
+# one IP and each call can balloon from ~2s to ~40s when throttled.
+_YTDLP_SEM = threading.Semaphore(2)
 
 
 class ResolveError(Exception):
@@ -56,11 +61,12 @@ def _entry_to_track(entry: dict, query: str) -> Track | None:
 def _fetch(target: str, timeout: int = 30) -> list[dict] | None:
     """Run yt-dlp once; return the raw entry dicts (or None on failure)."""
     try:
-        proc = subprocess.run(
-            [_ytdlp_bin(), "--flat-playlist", "--no-warnings",
-             "--dump-single-json", target],
-            capture_output=True, text=True, timeout=timeout,
-        )
+        with _YTDLP_SEM:
+            proc = subprocess.run(
+                [_ytdlp_bin(), "--flat-playlist", "--no-warnings",
+                 "--dump-single-json", target],
+                capture_output=True, text=True, timeout=timeout,
+            )
     except subprocess.TimeoutExpired:
         raise ResolveError(f"yt-dlp timed out resolving {target!r}") from None
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -74,6 +80,30 @@ def _fetch(target: str, timeout: int = 30) -> list[dict] | None:
     if isinstance(data, dict):
         return [data]
     return list(data) if isinstance(data, list) else []
+
+
+def get_direct_url(url: str, timeout: int = 20) -> str:
+    """Resolve a watch URL to a direct media URL (`yt-dlp -g`).
+
+    mpv can stream this URL without running its own yt-dlp extraction, so a
+    prefetched direct URL makes track changes start almost instantly.
+    """
+    try:
+        with _YTDLP_SEM:
+            proc = subprocess.run(
+                [_ytdlp_bin(), "-f", "bestaudio/best", "--no-warnings",
+                 "--no-playlist", "-g", url],
+                capture_output=True, text=True, timeout=timeout,
+            )
+    except subprocess.TimeoutExpired:
+        raise ResolveError(
+            f"yt-dlp timed out resolving direct url for {url!r}") from None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise ResolveError(proc.stderr.strip() or "no direct url")
+    direct = proc.stdout.strip().splitlines()[0].strip()
+    if not direct.startswith("http"):
+        raise ResolveError("unexpected direct url output")
+    return direct
 
 
 def resolve(arg: str, timeout: int = 30) -> Track:
