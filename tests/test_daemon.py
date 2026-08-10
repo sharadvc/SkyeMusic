@@ -165,6 +165,76 @@ class TestDaemonHandlers(unittest.TestCase):
         self.d._prefetch_next_locked()
         self.assertEqual(seen, ["u2", "u3"])
 
+    def test_mix_shuffles_and_plays(self):
+        import tune.daemon as D
+        orig = D.search
+        tracks = [T("u1", "Alpha", "ChA"), T("u2", "Beta", "ChB"), T("u3", "Delta", "ChC")]
+        D.search = lambda arg, limit=20: tracks[:limit]
+        try:
+            resp = self.d._h_mix("chill vibes")
+        finally:
+            D.search = orig
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["data"]["count"], 3)
+        self.assertEqual(len(self.d.q.tracks), 3)
+        self.assertEqual(self.d.q.index, 0)
+
+    def test_mix_empty_search(self):
+        import tune.daemon as D
+        orig = D.search
+        D.search = lambda arg, limit=20: []
+        try:
+            resp = self.d._h_mix("noresults")
+        finally:
+            D.search = orig
+        self.assertFalse(resp["ok"])
+
+    def test_suggest_from_history(self):
+        self.d._history = [
+            {"title": "Coldplay Yellow", "query": "coldplay", "url": "u1"},
+            {"title": "Lo-fi Beats", "query": "lo-fi", "url": "u2"},
+        ]
+        resp = self.d._h_suggest("cold")
+        self.assertEqual(resp["data"]["suggestions"], ["Coldplay Yellow"])
+
+    def test_bookmark_saves_and_lists(self):
+        self.d.q.tracks = [T("u1", "Song")]
+        self.d.q.index = 0
+        self.d._last_pos = 90.0
+        resp = self.d._h_bookmark("chorus")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(len(self.d._bookmarks), 1)
+        self.assertEqual(self.d._bookmarks[0]["label"], "chorus")
+        resp2 = self.d._h_bookmarks("")
+        self.assertEqual(len(resp2["data"]["bookmarks"]), 1)
+
+    def test_bookmarks_play(self):
+        self.d._bookmarks = [{"url": "u1", "title": "Song", "position": 42.0, "label": "x"}]
+        self.d.q.tracks = [T("u0", "Old")]
+        resp = self.d._h_bookmarks("play 1")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(self.d.q.current().url, "u1")
+        self.assertEqual(self.d._restore_pos, 42.0)
+
+    def test_advance_gapless_skips_manual_load(self):
+        self.d.q.tracks = [T("u1", "A"), T("u2", "B")]
+        self.d.q.index = 0
+        self.d._gapless_loaded = 1
+        calls = []
+        self.d._load_current_locked = lambda: calls.append("load")
+        self.d._advance_locked()
+        self.assertEqual(self.d.q.index, 1)
+        self.assertEqual(calls, [])  # mpv's append-play handles the transition
+
+    def test_advance_without_gapless_loads(self):
+        self.d.q.tracks = [T("u1", "A"), T("u2", "B")]
+        self.d.q.index = 0
+        calls = []
+        self.d._load_current_locked = lambda: calls.append("load")
+        self.d._advance_locked()
+        self.assertEqual(self.d.q.index, 1)
+        self.assertEqual(calls, ["load"])
+
 
 if __name__ == "__main__":
     unittest.main()

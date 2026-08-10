@@ -79,6 +79,17 @@ def _print_info(d: dict) -> None:
           f"shuffle: {'on' if d.get('shuffle') else 'off'}")
 
 
+def _print_bookmarks(d: dict) -> None:
+    marks = d.get("bookmarks") or []
+    if not marks:
+        print("no bookmarks yet — tune bookmark while a track plays")
+        return
+    print("bookmarks:")
+    for i, b in enumerate(marks, 1):
+        print(f"{i:2}.  [{_fmt_time(b.get('position'))}]  {b.get('title')}  ({b.get('label')})")
+    print("\njump to one with:  tune bookmarks <n>")
+
+
 def _print_favs(d: dict, action: str) -> None:
     if action == "play":
         print(f"▶ playing {d.get('count', 0)} favorites")
@@ -182,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("daemon", help="run the background player daemon (internal)")
     sub.add_parser("play").add_argument("query", nargs="+", help="song(s) to search & play now")
     sub.add_parser("add").add_argument("query", nargs="+", help="song(s) to queue (keep playing)")
+    sub.add_parser("mix", help="shuffle a playlist or search + play immediately").add_argument(
+        "query", nargs="+", help="YouTube playlist URL, search query, or video URL")
     sub.add_parser("search").add_argument("query", help="search YouTube and list results")
     sub.add_parser("pause", help="pause playback")
     sub.add_parser("resume", help="resume playback")
@@ -232,6 +245,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("fav", help="favorite / unfavorite the current track")
     favs = sub.add_parser("favs", help="show favorites")
     favs.add_argument("action", nargs="?", choices=["play"], default="", help="play favorites")
+    sub.add_parser("bookmark", help="bookmark the current position in the track").add_argument(
+        "label", nargs="?", default="", help="optional label")
+    sub.add_parser("bookmarks", help="list bookmarks").add_argument(
+        "n", nargs="?", type=int, default=None, help="jump to bookmark <n>")
     sub.add_parser("sleep").add_argument("minutes", nargs="?", default="",
                                          help="minutes, or 'off' to cancel")
     sub.add_parser("config").add_argument("key_value", nargs="+",
@@ -288,6 +305,8 @@ def run(argv: list[str]) -> int:
         arg = args.query  # list of songs
     elif verb == "add":
         arg = args.query  # list of songs
+    elif verb == "mix":
+        arg = " ".join(args.query)  # one search query or URL
     elif verb == "search":
         arg = args.query
     elif verb == "playlist":
@@ -296,6 +315,10 @@ def run(argv: list[str]) -> int:
         verb = "history"
     elif verb == "favs":
         arg = args.action  # "" or "play"
+    elif verb == "bookmark":
+        arg = args.label
+    elif verb == "bookmarks":
+        arg = f"play {args.n}" if args.n else ""
     elif verb == "sleep":
         arg = args.minutes  # "" / "30" / "off"
     elif verb == "config":
@@ -327,7 +350,7 @@ def run(argv: list[str]) -> int:
         verb = "quit-daemon"
 
     try:
-        if verb in ("play", "add"):
+        if verb in ("play", "add", "mix"):
             names = ", ".join(arg) if isinstance(arg, list) else str(arg)
             print(f"… resolving {names}…", file=sys.stderr, flush=True)
         elif verb == "search":
@@ -384,6 +407,10 @@ def run(argv: list[str]) -> int:
     elif verb == "play":
         extra = f"  (+{data.get('count') - 1} more queued)" if (data.get("count") or 1) > 1 else ""
         print(f"▶ {data.get('title')}{extra}")
+    elif verb == "mix":
+        cnt = (data.get("count") or 1) - 1
+        extra = f"  (+{cnt} more shuffled)" if cnt > 0 else ""
+        print(f"🎲 {data.get('title')}{extra}")
     elif verb == "add":
         added = data.get("added", 0)
         skipped = data.get("skipped", 0)
@@ -393,6 +420,13 @@ def run(argv: list[str]) -> int:
         print(f"↕ moved: {data.get('title')}")
     elif verb == "fav":
         print(f"{'♥' if data.get('fav') else '♡'} {data.get('title')}")
+    elif verb == "bookmark":
+        print(f"✓ bookmarked '{data.get('label')}' at {_fmt_time(data.get('position'))} — {data.get('title')}")
+    elif verb == "bookmarks":
+        if data.get("bookmarks") is not None:
+            _print_bookmarks(data)
+        else:
+            print(f"▶ {data.get('title')} at {_fmt_time(data.get('position'))}")
     elif verb == "volume":
         print(f"volume {data.get('volume')}")
     elif verb == "speed":

@@ -28,8 +28,10 @@ from . import __version__
 from .art import render as render_art
 from .config import Config
 from .lyrics import fetch as fetch_lyrics
+from .lyrics import fetch_lrclib
 from .player import MpvError, MpvHandle
 from .queue import (
+    BOOKMARKS_FILE,
     CTRL_SOCK,
     FAVORITES_FILE,
     HISTORY_FILE,
@@ -41,6 +43,7 @@ from .queue import (
     VOLUME_MAX,
     QueueState,
     Track,
+    shuffle_no_adjacent,
 )
 from .resolver import (
     ResolveError,
@@ -73,6 +76,7 @@ def mpv_argv(sock: str) -> list[str]:
         "--force-window=no",
         "--no-terminal",
         "--really-quiet",
+        "--prefetch-playlist=yes",
         "--volume=80",
         f"--volume-max={VOLUME_MAX}",
         "--ytdl-format=bestaudio/best",
@@ -155,9 +159,12 @@ class Daemon:
         self._last_load_url: str | None = None
         self._last_load_was_direct = False
         self._sq_running = False  # one smart-queue refill at a time
+        self._gapless_loaded: int | None = None  # index preloaded via append-play
         self._sleep_deadline: float | None = None  # time.monotonic deadline for sleep timer
+        self._sleep_original_vol: int = 0  # saved volume for the fade-out ramp
         self._favs: list[dict] = self._load_favorites()
         self._history: list[dict] = self._load_history()
+        self._bookmarks: list[dict] = self._load_bookmarks()
         self._lyrics: dict[str, list] = {}  # url -> timed lyric lines
         self._art_cache: dict[str, list] = {}  # url -> ANSI art lines
         self._undo: list = []  # ("remove", i, track) | ("clear", tr, idx) |
@@ -231,6 +238,7 @@ class Daemon:
         if track is None or self.player is None:
             self._state = "idle"
             return
+        self._gapless_loaded = None  # manual load cancels any pending gapless
         self._error = None
         self._error_streak = 0
         self._state = "loading"
@@ -291,7 +299,8 @@ class Daemon:
                 self._push_back()
                 self.q.index = 0
                 if self.q.shuffle:
-                    self.q.reshuffle_after_current()  # fresh order each cycle
+                    self.q.reshuffle_after_current()
+                self._gapless_loaded = None
                 self._load_current_locked()
             else:
                 last_url = self.q.tracks[-1].url if self.q.tracks else None
@@ -304,7 +313,17 @@ class Daemon:
                                      daemon=True).start()
             return
         self._push_back()
-        self.q.index += 1
+        next_idx = self.q.index + 1
+        # If the position loop already preloaded this via append-play, mpv will
+        # start it seamlessly — don't issue a second loadfile.
+        if self._gapless_loaded == next_idx:
+            self._gapless_loaded = None
+            self.q.index = next_idx
+            self._error_streak = 0
+            self._error = None
+            self.q.save()
+            return
+        self.q.index = next_idx
         self._load_current_locked()
 
     def _autoplay(self, url: str) -> None:
@@ -438,6 +457,22 @@ class Daemon:
                             self.q.positions[now.url] = float(pos)
                             if len(self.q.positions) > 500:
                                 self.q.positions.pop(next(iter(self.q.positions)), None)
+                    # gapless: preload the next track ~3-8s before the current ends
+                    if self._state == "playing" and self._gapless_loaded is None:
+                        now = self.q.current()
+                        if now and now.duration:
+                            remaining = now.duration - float(pos)
+                            if 2.0 < remaining < 8.0:
+                                nxt = self.q.index + 1
+                                if 0 <= nxt < len(self.q.tracks):
+                                    url = self.q.tracks[nxt].url
+                                    direct = self._cached_direct(url)
+                                    try:
+                                        handle.command("loadfile", direct or url,
+                                                       "append-play")
+                                        self._gapless_loaded = nxt
+                                    except MpvError:
+                                        pass
                 if ticks % 5 == 0:
                     self.q.save()
 
@@ -585,6 +620,19 @@ class Daemon:
         tmp.write_text(json.dumps(self._history, indent=2))
         os.replace(tmp, HISTORY_FILE)
 
+    def _load_bookmarks(self) -> list[dict]:
+        try:
+            data = json.loads(BOOKMARKS_FILE.read_text())
+            return data if isinstance(data, list) else []
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+
+    def _save_bookmarks(self) -> None:
+        BOOKMARKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = BOOKMARKS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._bookmarks, indent=2))
+        os.replace(tmp, BOOKMARKS_FILE)
+
     def _on_track_loaded_locked(self) -> None:
         """Record the play, fire the notification + hook. Caller holds _lock."""
         now = self.q.current()
@@ -657,10 +705,13 @@ class Daemon:
 
     def _sleep_loop(self) -> None:
         while not self._stop.is_set():
-            time.sleep(5)
+            time.sleep(1)  # check every second so the fade is smooth
             with self._lock:
-                if self._sleep_deadline is not None and \
-                        time.monotonic() >= self._sleep_deadline:
+                dl = self._sleep_deadline
+                if dl is None:
+                    continue
+                remaining = max(0, dl - time.monotonic())
+                if remaining <= 0:
                     self._sleep_deadline = None
                     log("sleep timer fired; stopping playback")
                     if self.player:
@@ -669,6 +720,18 @@ class Daemon:
                         except MpvError:
                             pass
                     self._state = "idle"
+                    self.q.volume = self._sleep_original_vol
+                    self.q.save()
+                elif remaining <= 5.0 and self.player:
+                    # fade: ramp volume to 0 over the last 5 seconds
+                    if self._sleep_original_vol == 0:
+                        self._sleep_original_vol = self.q.volume
+                    target = int(self._sleep_original_vol * remaining / 5.0)
+                    target = max(0, min(self._sleep_original_vol, target))
+                    try:
+                        self.player.set_property("volume", target)
+                    except MpvError:
+                        pass
 
     # --- playlist helpers ---------------------------------------------------
 
@@ -751,7 +814,9 @@ class Daemon:
             "ping": self._h_ping,
             "play": self._h_play,
             "add": self._h_add,
+            "mix": self._h_mix,
             "search": self._h_search,
+            "suggest": self._h_suggest,
             "next": self._h_next,
             "prev": self._h_prev,
             "playindex": self._h_playindex,
@@ -781,6 +846,8 @@ class Daemon:
             "playlist": self._h_playlist,
             "fav": self._h_fav,
             "favs": self._h_favs,
+            "bookmark": self._h_bookmark,
+            "bookmarks": self._h_bookmarks,
             "sleep": self._h_sleep,
             "config": self._h_config,
             "remote": self._h_remote,
@@ -927,6 +994,45 @@ class Daemon:
             "added": len(fresh), "skipped": skipped,
             "queue_len": len(self.q.tracks)}}
 
+    def _h_mix(self, arg) -> dict:
+        """Resolve a playlist URL or search query, then shuffle and play."""
+        arg = str(arg).strip()
+        if not arg:
+            return {"ok": False, "error": "mix needs a query, URL, or playlist"}
+        with self._op_lock:
+            if is_playlist_url(arg):
+                try:
+                    tracks = resolve_playlist(arg)
+                except ResolveError as e:
+                    return {"ok": False, "error": str(e)}
+            elif _is_url_or_id(arg):
+                tracks = self._tracks_for_arg(arg)  # real resolve; single track, shuffle is a no-op
+            else:
+                n = int(self.cfg.get("mix_count", 20))
+                tracks = search(arg, limit=n)
+                if not tracks:
+                    return {"ok": False, "error": f"no results for {arg!r}"}
+            if not tracks:
+                return {"ok": False, "error": "nothing to play"}
+            shuffled = shuffle_no_adjacent(tracks, key=lambda t: t.channel)
+            with self._lock:
+                if self.q.tracks:
+                    self._undo.append(("replace",
+                                       [t.as_json() for t in self.q.tracks],
+                                       self.q.index))
+                    self._undo = self._undo[-20:]
+                self._clear_back()
+                self._play_gen += 1
+                self._pending_arg = None
+                self._restore_pos = None
+                self.q.tracks = shuffled
+                self.q.index = 0
+                self.q.shuffle = False
+                self._load_current_locked()
+        self._spawn_enrich(shuffled)
+        return {"ok": True, "data": {"title": shuffled[0].title,
+                                     "count": len(shuffled)}}
+
     def _h_search(self, arg: str) -> dict:
         data = self._cache_get(self._search_cache, arg)
         if data is None:
@@ -945,6 +1051,24 @@ class Daemon:
                         Track(query=r["url"], title=r["title"], url=r["url"],
                               duration=r.get("duration"), channel=r.get("channel") or ""))
         return {"ok": True, "data": {"query": arg, "results": data}}
+
+    def _h_suggest(self, arg: str) -> dict:
+        """Return up to 5 history titles/queries matching a prefix (for TUI auto-complete)."""
+        needle = str(arg).strip().lower()
+        if not needle:
+            return {"ok": True, "data": {"suggestions": []}}
+        seen: set[str] = set()
+        out: list[str] = []
+        for h in self._history:
+            for key in (h.get("title"), h.get("query")):
+                key = str(key)
+                if needle in key.lower() and key not in seen:
+                    seen.add(key)
+                    out.append(key)
+                    break
+            if len(out) >= 5:
+                break
+        return {"ok": True, "data": {"suggestions": out}}
 
     def _h_next(self, _arg: str = "") -> dict:
         with self._op_lock:
@@ -1052,6 +1176,7 @@ class Daemon:
 
     def _h_stop(self, _arg: str = "") -> dict:
         with self._lock:
+            self._gapless_loaded = None
             self._state = "idle"
             if self.player:
                 try:
@@ -1163,6 +1288,11 @@ class Daemon:
             lines = fetch_lyrics(url)
         except Exception as e:
             return {"ok": False, "error": f"lyrics unavailable: {e}"}
+        if not lines and now:  # YouTube had no subs -> try LRCLIB by title/artist
+            try:
+                lines = fetch_lrclib(now.title, now.channel or "", now.duration)
+            except Exception:
+                lines = []
         if not lines:
             return {"ok": True, "data": {"lines": [], "note": "no subtitles available"}}
         with self._lock:
@@ -1470,6 +1600,62 @@ class Daemon:
                 "tracks": self._favs,
                 "current_is_fav": self._is_fav(now.url if now else None),
             }}
+
+    def _h_bookmark(self, arg: str = "") -> dict:
+        """Save the current track + position as a bookmark (arg = optional label)."""
+        label = arg.strip()
+        with self._lock:
+            now = self.q.current()
+            if now is None:
+                return {"ok": False, "error": "nothing playing to bookmark"}
+            pos = self._last_pos
+            if not label:
+                m, s = divmod(int(pos), 60)
+                label = f"{m}:{s:02d}"
+            entry = {"url": now.url, "title": now.title, "channel": now.channel,
+                     "duration": now.duration, "position": round(pos, 1),
+                     "label": label, "ts": int(time.time())}
+            # same url+label replaces the older entry
+            self._bookmarks = [b for b in self._bookmarks
+                               if not (b.get("url") == now.url and b.get("label") == label)]
+            self._bookmarks.insert(0, entry)
+            self._bookmarks = self._bookmarks[:50]
+            self._save_bookmarks()
+        return {"ok": True, "data": {"label": label, "title": now.title,
+                                     "position": round(pos, 1)}}
+
+    def _h_bookmarks(self, arg: str = "") -> dict:
+        """List bookmarks, or `bookmarks play <n>` to jump to one."""
+        arg = arg.strip()
+        if arg.startswith("play"):
+            try:
+                n = int(arg.split()[1]) - 1
+            except (IndexError, ValueError):
+                return {"ok": False, "error": "usage: bookmarks play <n>"}
+            with self._op_lock:
+                with self._lock:
+                    if not (0 <= n < len(self._bookmarks)):
+                        return {"ok": False, "error": f"no bookmark #{n + 1}"}
+                    b = self._bookmarks[n]
+                    track = Track(query=b["url"], title=b["title"], url=b["url"],
+                                  duration=b.get("duration"), channel=b.get("channel") or "")
+                    if self.q.tracks:
+                        self._undo.append(("replace",
+                                           [t.as_json() for t in self.q.tracks],
+                                           self.q.index))
+                        self._undo = self._undo[-20:]
+                    self._clear_back()
+                    self._play_gen += 1
+                    self._pending_arg = None
+                    self._restore_pos = float(b.get("position", 0))
+                    self.q.tracks = [track]
+                    self.q.index = 0
+                    self.q.shuffle = False
+                    self._load_current_locked()
+                return {"ok": True, "data": {"title": b["title"],
+                                             "position": b.get("position")}}
+        with self._lock:
+            return {"ok": True, "data": {"bookmarks": self._bookmarks}}
 
     def _h_playlist(self, arg) -> dict:
         if not isinstance(arg, list) or len(arg) < 1:

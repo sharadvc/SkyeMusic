@@ -6,11 +6,14 @@ Returns a list of `{start, end, text}` (seconds). Empty list = unavailable.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 _TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})[.,](\d{1,3})")
@@ -62,3 +65,48 @@ def fetch(url: str, timeout: int = 60) -> list[dict]:
         if not vtts:
             return []
         return parse_vtt(vtts[0].read_text(errors="replace"))
+
+
+# --- LRCLIB fallback (open synced lyrics, no auth) -------------------------
+
+def parse_lrc(text: str) -> list[dict]:
+    """Parse LRC lyrics into [{start, end, text}] (seconds)."""
+    out: list[dict] = []
+    tag = re.compile(r"\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]")
+    for raw in text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        hits = tag.findall(raw)
+        if not hits:
+            continue
+        body = re.sub(r"\[[^\]]*\]", "", raw).strip()
+        if not body:
+            continue
+        for h, m, ms in hits:
+            # LRC timestamps are [mm:ss.xx]
+            start = int(h) * 60 + int(m) + int((ms or "0").ljust(3, "0")) / 1000.0
+            out.append({"start": start, "text": body})
+    out.sort(key=lambda x: x["start"])
+    for i, ln in enumerate(out):
+        ln["end"] = out[i + 1]["start"] if i + 1 < len(out) else ln["start"] + 10
+    return out
+
+
+def fetch_lrclib(title: str, artist: str, duration: float | None = None,
+                 timeout: int = 15) -> list[dict]:
+    """Look up synced lyrics on LRCLIB by track/artist (no auth)."""
+    params: dict[str, object] = {"track_name": title, "artist_name": artist}
+    if duration:
+        params["duration"] = int(duration)
+    url = "https://lrclib.net/api/get?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"User-Agent": "tune/0.1 (music player)"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return []
+    lrc = data.get("syncedLyrics") or data.get("plainLyrics")
+    if not lrc:
+        return []
+    return parse_lrc(lrc)

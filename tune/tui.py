@@ -182,7 +182,7 @@ def _loop(stdscr) -> None:
         h, w = stdscr.getmaxyx()
         if h > 1 and w > 1:
             _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
-                  amp_t, ui, cmdq, theme_sel, theme_names, qfilter)
+                  amp_t, ui, cmdq, theme_sel, theme_names, qfilter, sbucket)
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -470,11 +470,18 @@ def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket):
         elif q and not ssearching:
             _start_search(q, sbucket)
             ssearching, smsg, sresults, ssel = True, "", [], 0
-    elif ch == 9:  # tab -> add selected to queue
+    elif ch == 9:  # tab
         if sresults and not ssearching:
-            _add_url(sresults[ssel]["url"])
+            _add_url(sresults[ssel]["url"])  # add selected result to queue
+        else:
+            sugg = sbucket.get("suggest") or []
+            if sugg:  # autofill the query from the top suggestion
+                sq = sugg[0]
+                sresults, ssel = [], 0
+                _start_suggest(sq, sbucket)
     elif ch in (curses.KEY_BACKSPACE, 127, 8):
         sq = sq[:-1]
+        _start_suggest(sq, sbucket)
     elif ch in (curses.KEY_DOWN,):
         if sresults:
             ssel = min(len(sresults) - 1, ssel + 1)
@@ -486,6 +493,7 @@ def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket):
         if len(sq) < _SEARCH_LIMIT:
             sq += chr(ch)
             sresults, ssel = [], 0  # query changed; old results are stale
+            _start_suggest(sq, sbucket)
     return mode, sq, sresults, ssel, ssearching, smsg, sbucket
 
 
@@ -516,6 +524,22 @@ def _start_search(query: str, bucket: dict) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _start_suggest(query: str, bucket: dict) -> None:
+    """Fetch history-based autocomplete suggestions for the search box."""
+    if not query.strip():
+        bucket["suggest"] = []
+        return
+
+    def worker() -> None:
+        try:
+            resp = send_cmd("suggest", query)
+            bucket["suggest"] = ((resp.get("data") or {}).get("suggestions", [])
+                                 if resp.get("ok") else [])
+        except Exception:
+            bucket["suggest"] = []
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def _play_url(url: str) -> None:
     # Background so the UI stays responsive while the daemon resolves+loads.
     threading.Thread(target=lambda: send_cmd("play", url), daemon=True).start()
@@ -536,7 +560,7 @@ def _cycle_repeat(status: dict) -> None:
 def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
           amp_t: float, ui: dict, cmdq: str = "",
           theme_sel: int = 0, theme_names: list | None = None,
-          qfilter: str = "") -> None:
+          qfilter: str = "", sbucket: dict | None = None) -> None:
     _draw_header(stdscr, status, w)
     _draw_amp(stdscr, status, amp_t, w)
     if status.get("error"):
@@ -546,7 +570,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         except curses.error:
             pass
     if mode == "search":
-        _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg)
+        _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg, sbucket)
     elif mode == "cmd":
         _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
         try:
@@ -770,7 +794,8 @@ def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str]) -> No
             pass
 
 
-def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg) -> None:
+def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg,
+                 sbucket: dict | None = None) -> None:
     # input line
     line = "Search: " + sq + "_"
     try:
@@ -805,11 +830,29 @@ def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg) -> None:
                 pass
             row += 1
     else:
-        try:
-            stdscr.addstr(row, 0, "type a song (e.g. /search coldplay) and press enter"[: w - 1],
-                          curses.color_pair(6) | curses.A_DIM)
-        except curses.error:
-            pass
+        sugg = (sbucket or {}).get("suggest") or []
+        if sugg:
+            for i, s in enumerate(sugg[:5]):
+                if row >= h - 2:
+                    break
+                mark = "→" if i == 0 else " "
+                try:
+                    stdscr.addstr(row, 0, (f"{mark} {s}")[: w - 1],
+                                  curses.color_pair(6) | (curses.A_REVERSE if i == 0 else 0))
+                except curses.error:
+                    pass
+                row += 1
+            try:
+                stdscr.addstr(row, 0, "tab autofill · enter search"[: w - 1],
+                              curses.color_pair(6) | curses.A_DIM)
+            except curses.error:
+                pass
+        else:
+            try:
+                stdscr.addstr(row, 0, "type a song (e.g. /search coldplay) and press enter"[: w - 1],
+                              curses.color_pair(6) | curses.A_DIM)
+            except curses.error:
+                pass
 
     try:
         stdscr.addstr(h - 1, 0, _SEARCH_HELP[: w - 1], curses.color_pair(6) | curses.A_DIM)

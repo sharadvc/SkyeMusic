@@ -27,6 +27,7 @@ tune                          # full-screen player — press / to search from in
 tune search "song name"       # list YouTube results, then play one
 tune play "song1" "song2"     # play one song, or a whole list at once
 tune play <youtube_playlist_url>   # play a whole YouTube playlist
+tune mix "lo-fi beats"        # search, shuffle, and play immediately
 tune add "song"               # queue without interrupting (dedupes repeats)
 tune pause | resume | toggle
 tune next | prev | stop       # prev walks back through what you actually heard
@@ -41,6 +42,8 @@ tune repeat all | one | off
 tune fav                      # favorite / unfavorite the current track
 tune favs                     # list favorites
 tune favs play                # play your favorites
+tune bookmark [label]         # save the current position in the track
+tune bookmarks [n]            # list bookmarks; add a number to jump to one
 tune playlist save <name>     # save the current queue as a named playlist
 tune playlist load <name> | add <name> | show <name> | delete <name> | list
 tune playlist smart most-played | recents | recently-added | artist:<name>
@@ -59,6 +62,7 @@ tune m3u export <name> [file] # export a playlist to .m3u
 tune m3u import <file> [name] # import a .m3u as a playlist
 tune undo                     # undo remove/clear/play/shuffle
 tune config autoplay on       # smart radio: keep playing similar songs at queue end
+tune config mix_count 30      # how many search results `tune mix` fetches
 tune config smart_queue on    # keep appending related tracks when the queue runs short
 tune config resume on         # per-track resume (podcast mode)
 tune config intro_skip 20     # skip the first 20s of a never-resumed track

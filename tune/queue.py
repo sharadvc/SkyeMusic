@@ -18,6 +18,7 @@ LOG_FILE = CONFIG_DIR / "tune.log"
 PLAYLIST_DIR = CONFIG_DIR / "playlists"
 FAVORITES_FILE = CONFIG_DIR / "favorites.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
+BOOKMARKS_FILE = CONFIG_DIR / "bookmarks.json"
 
 # Sockets live in $TMPDIR, which is per-user on macOS.
 _SOCK_DIR = Path(os.environ.get("TMPDIR", "/tmp"))

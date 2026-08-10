@@ -28,6 +28,7 @@ DEFAULTS = {
     "resume": False,          # per-track resume (podcast mode): remember each track's position
     "intro_skip": 0,          # seconds to skip at the start of a never-resumed track
     "listenbrainz_token": "", # scrobble to ListenBrainz ("" = disabled)
+    "mix_count": 20,           # how many search results `tune mix` includes
     "on_track_change": "",    # shell command run on every track change (receives title/url)
 }
 
