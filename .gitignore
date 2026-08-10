@@ -13,6 +13,9 @@ dist/
 .idea/
 .vscode/
 
+# Node (web/ frontend)
+node_modules/
+
 # Local runtime data / secrets
 .env
 .env.*

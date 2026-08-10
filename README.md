@@ -119,6 +119,23 @@ key types into the search box. Typing a leading `/` or `search ` is optional —
 - `tune` (CLI) and the TUI are thin clients over a local Unix socket —
   control it from any shell while music keeps playing.
 
+## Phone remote (web UI)
+
+The remote page is a **React + shadcn/ui + Tailwind** app (in `web/`). Build it
+once, then the daemon serves it from `http://<your-mac>:8765`:
+
+```sh
+cd web
+npm install
+npm run build        # produces web/dist, served automatically by the daemon
+npm run dev          # optional: hot-reload dev server (proxies /api to the daemon)
+```
+
+- PIN-lock it with `tune config remote_pin 2468`.
+- `tune remote` shows your phone's URL.
+- Tracks carry real album-art thumbnails; seek, reorder, remove, search, and
+  favorites all work from the phone.
+
 ## Config / state
 
 - `~/.config/tune/queue.json` — queue, volume, repeat, shuffle, last position

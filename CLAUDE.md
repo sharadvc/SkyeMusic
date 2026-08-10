@@ -26,6 +26,12 @@ Requires the external binaries `mpv` and `yt-dlp` (Homebrew).
 - **resolver / lyrics / art / scrobble / mediakeys** — yt-dlp metadata lookups,
   karaoke subs, ANSI thumbnail art, ListenBrainz scrobbling, and optional
   macOS media keys.
+- **web/** — the phone remote as a React + shadcn/ui + Tailwind app (Vite).
+  Build it with `cd web && npm install && npm run build`; the daemon serves
+  `web/dist/` from the HTTP port and proxies `/api/*` to the control socket.
+  `npm run dev` gives a hot-reload dev server (it proxies `/api` to
+  localhost:8765). Keep the daemon's `/api` contract stable — the frontend is
+  a thin client over it (see `web/src/lib/api.ts` for the typed client).
 
 ## Running
 

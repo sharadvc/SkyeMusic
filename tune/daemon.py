@@ -1840,6 +1840,8 @@ class Daemon:
                 "data": {
                     "state": state,
                     "title": title,
+                    "url": now.url if now else None,
+                    "channel": now.channel if now else "",
                     "query": now.query if now else None,
                     "position": float(pos) if pos is not None else 0.0,
                     "duration": float(dur) if dur is not None else None,
@@ -1849,7 +1851,8 @@ class Daemon:
                     "current_index": self.q.index,
                     "queue_len": len(self.q.tracks),
                     "queue": [
-                        {"query": t.query, "title": t.title, "duration": t.duration}
+                        {"query": t.query, "title": t.title, "duration": t.duration,
+                         "channel": t.channel, "url": t.url}
                         for t in self.q.tracks
                     ],
                     "sleep_remaining": (max(0, self._sleep_deadline - time.monotonic())
