@@ -33,6 +33,10 @@ def _print_status(d: dict) -> None:
         line += f"   [!] {d['error']}"
     print(line)
     extra = f" · speed {d.get('speed')}×" if d.get("speed") and d.get("speed") != 1 else ""
+    mood = d.get("mood")
+    if mood:
+        refine = " ".join(x for x in (d.get("mood_lang"), d.get("mood_artist")) if x)
+        extra += f" · mood {mood}" + (f" · {refine}" if refine else "")
     print(f"    volume {d.get('volume')} · repeat {d.get('repeat')} · "
           f"shuffle {'on' if d.get('shuffle') else 'off'} · queue {d.get('queue_len')}{extra}")
 
@@ -195,6 +199,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("add").add_argument("query", nargs="+", help="song(s) to queue (keep playing)")
     sub.add_parser("mix", help="shuffle a playlist or search + play immediately").add_argument(
         "query", nargs="+", help="YouTube playlist URL, search query, or video URL")
+    sub.add_parser("mood", help="play an intelligent session for a mood").add_argument(
+        "mood", nargs="+",
+        help="<mood> [language] [artist] — e.g. 'sad hindi', 'focus english', 'sad punjabi sidhu'")
+    sub.add_parser("radio", help="radio from an artist, song, genre, or URL").add_argument(
+        "seed", nargs="+")
+    sub.add_parser("similar", help="play tracks like a song (default: current)").add_argument(
+        "song", nargs="*", default="")
+    sub.add_parser("discover", help="play fresh tracks you haven't heard")
+    q = sub.add_parser("queue", help="smart queue control")
+    q.add_argument("action", nargs="?", default="status",
+                   help="add | remove | move | shuffle | clear | smart")
+    q.add_argument("args", nargs="*", help="action arguments")
     sub.add_parser("search").add_argument("query", help="search YouTube and list results")
     sub.add_parser("pause", help="pause playback")
     sub.add_parser("resume", help="resume playback")
@@ -307,6 +323,16 @@ def run(argv: list[str]) -> int:
         arg = args.query  # list of songs
     elif verb == "mix":
         arg = " ".join(args.query)  # one search query or URL
+    elif verb == "mood":
+        arg = " ".join(args.mood)
+    elif verb == "radio":
+        arg = " ".join(args.seed)
+    elif verb == "similar":
+        arg = " ".join(args.song)
+    elif verb == "discover":
+        arg = ""
+    elif verb == "queue":
+        arg = " ".join([args.action] + list(args.args))
     elif verb == "search":
         arg = args.query
     elif verb == "playlist":
@@ -411,6 +437,27 @@ def run(argv: list[str]) -> int:
         cnt = (data.get("count") or 1) - 1
         extra = f"  (+{cnt} more shuffled)" if cnt > 0 else ""
         print(f"🎲 {data.get('title')}{extra}")
+    elif verb == "mood":
+        cnt = (data.get("count") or 1) - 1
+        refine = " ".join(x for x in (data.get("lang"), data.get("artist")) if x)
+        label = f"{data.get('mood')} · {refine}" if refine else data.get("mood")
+        print(f"🎧 {label} · {data.get('title')}  (+{cnt} more)")
+    elif verb == "radio":
+        cnt = (data.get("count") or 1) - 1
+        print(f"📻 {data.get('seed')}: {data.get('title')}  (+{cnt} more)")
+    elif verb == "similar":
+        cnt = (data.get("count") or 1) - 1
+        print(f"🔀 like {data.get('seed')}: {data.get('title')}  (+{cnt} more)")
+    elif verb == "discover":
+        cnt = (data.get("count") or 1) - 1
+        print(f"✨ discover: {data.get('title')}  (+{cnt} more)")
+    elif verb == "queue":
+        if data.get("tracks") is not None:
+            mood = f" · mood {data.get('mood')}" if data.get("mood") else ""
+            print(f"queue {data.get('queue_len')} · index {data.get('index')} · "
+                  f"smart {'on' if data.get('smart_queue') else 'off'}{mood}")
+        else:
+            print("queue ok")
     elif verb == "add":
         added = data.get("added", 0)
         skipped = data.get("skipped", 0)

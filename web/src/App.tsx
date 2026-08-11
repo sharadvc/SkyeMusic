@@ -216,6 +216,13 @@ export default function App() {
             </div>
           </Card>
 
+          <MoodRadio
+            onAct={act}
+            mood={status.mood ?? null}
+            lang={status.mood_lang ?? null}
+            artist={status.mood_artist ?? null}
+          />
+
           <div className="mt-4">
             <Tabs defaultValue="queue">
               <TabsList className="w-full">
@@ -256,6 +263,75 @@ export default function App() {
           </Card>
         </div>
       )}
+    </div>
+  )
+}
+
+function MoodRadio({
+  onAct,
+  mood,
+  lang,
+  artist,
+}: {
+  onAct: (v: string, a?: string) => void
+  mood: string | null
+  lang: string | null
+  artist: string | null
+}) {
+  const [radio, setRadio] = useState("")
+  const moods = ["focus", "chill", "energetic", "sad", "party"]
+  const refine = [lang, artist].filter(Boolean).join(" · ")
+  return (
+    <div className="mt-4">
+      <div className="mb-1.5 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Mood</span>
+        {mood && (
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-primary">
+            🎧 {mood}
+            {refine ? ` · ${refine}` : ""}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {moods.map((m) => (
+          <Button
+            key={m}
+            size="sm"
+            variant={mood === m ? "default" : "secondary"}
+            onClick={() => onAct("mood", m)}
+          >
+            {m}
+          </Button>
+        ))}
+        <Button size="sm" variant="secondary" onClick={() => onAct("discover")}>
+          ✨ Discover
+        </Button>
+      </div>
+      <div className="mt-2 flex gap-2">
+        <Input
+          className="h-9"
+          placeholder="radio: artist / song / genre"
+          value={radio}
+          onChange={(e) => setRadio(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && radio.trim()) {
+              onAct("radio", radio.trim())
+              setRadio("")
+            }
+          }}
+        />
+        <Button
+          size="sm"
+          className="h-9 shrink-0"
+          disabled={!radio.trim()}
+          onClick={() => {
+            onAct("radio", radio.trim())
+            setRadio("")
+          }}
+        >
+          📻
+        </Button>
+      </div>
     </div>
   )
 }

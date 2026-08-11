@@ -23,6 +23,10 @@ export type Status = {
   fav: boolean
   error: string | null
   sleep_remaining: number | null
+  mood: string | null
+  mood_lang: string | null
+  mood_artist: string | null
+  smart_queue: boolean
 }
 
 export class PinRequired extends Error {}

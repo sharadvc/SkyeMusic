@@ -23,6 +23,11 @@ Requires the external binaries `mpv` and `yt-dlp` (Homebrew).
 - **queue** (`tune/queue.py`) — `Track`, `QueueState`, runtime paths, and the
   artist-aware `shuffle_no_adjacent`. State persists to
   `~/.config/tune/queue.json` (atomic writes).
+- **musicbrain** — local-first music intelligence: mood/radio/similar/discover
+  session builders, natural-language intent detection (`detect_intent`), and
+  preference-ranked dedupe. Search/related/resolve are injected so it uses the
+  daemon's caches + semaphore. `_session_mood` holds the active mood context,
+  which the smart-queue continuation blends in.
 - **resolver / lyrics / art / scrobble / mediakeys** — yt-dlp metadata lookups,
   karaoke subs, ANSI thumbnail art, ListenBrainz scrobbling, and optional
   macOS media keys.

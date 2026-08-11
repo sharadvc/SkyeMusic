@@ -235,6 +235,93 @@ class TestDaemonHandlers(unittest.TestCase):
         self.assertEqual(self.d.q.index, 1)
         self.assertEqual(calls, ["load"])
 
+    def test_mood_plays_session(self):
+        import tune.daemon as D
+        orig = D.build_mood_session
+        D.build_mood_session = lambda *a, **k: [T("u1", "Focus Song", "ArtistA"),
+                                                T("u2", "Focus 2", "ArtistB")]
+        try:
+            resp = self.d._h_mood("focus")
+        finally:
+            D.build_mood_session = orig
+        self.assertTrue(resp["ok"])
+        self.assertEqual(self.d._session_mood, "focus")
+        self.assertEqual(len(self.d.q.tracks), 2)
+
+    def test_mood_with_lang_artist(self):
+        import tune.daemon as D
+        orig = D.build_mood_session
+        captured = {}
+
+        def fake(*a, **k):
+            captured.update(k)
+            return [T("u1", "Song")]
+
+        D.build_mood_session = fake
+        try:
+            resp = self.d._h_mood("sad hindi arijit singh")
+        finally:
+            D.build_mood_session = orig
+        self.assertTrue(resp["ok"])
+        self.assertEqual(captured.get("lang"), "hindi")
+        self.assertEqual(captured.get("artist"), "arijit singh")
+        self.assertEqual(self.d._session_lang, "hindi")
+        self.assertEqual(self.d._session_artist, "arijit singh")
+
+    def test_play_routes_mood_intent(self):
+        import tune.daemon as D
+        orig = D.build_mood_session
+        D.build_mood_session = lambda *a, **k: [T("u1", "Sad Song")]
+        try:
+            resp = self.d._h_play("sad songs")
+        finally:
+            D.build_mood_session = orig
+        self.assertTrue(resp["ok"])
+        self.assertEqual(self.d._session_mood, "sad")
+
+    def test_play_routes_radio_intent(self):
+        import tune.daemon as D
+        orig = D.build_radio_session
+        D.build_radio_session = lambda *a, **k: [T("u1", "Radio Song")]
+        try:
+            resp = self.d._h_play("songs like nights")
+        finally:
+            D.build_radio_session = orig
+        self.assertTrue(resp["ok"])
+        self.assertEqual(self.d.q.tracks[0].url, "u1")
+
+    def test_radio_plays_session(self):
+        import tune.daemon as D
+        orig = D.build_radio_session
+        D.build_radio_session = lambda *a, **k: [T("u1", "Radio Song")]
+        try:
+            resp = self.d._h_radio("frank ocean")
+        finally:
+            D.build_radio_session = orig
+        self.assertTrue(resp["ok"])
+        self.assertEqual(self.d.q.tracks[0].url, "u1")
+
+    def test_queue_move_dispatch(self):
+        self.d.q.tracks = [T("u1", "A"), T("u2", "B"), T("u3", "C")]
+        resp = self.d._h_queue("move 1 3")
+        self.assertTrue(resp["ok"])
+        self.assertEqual([t.url for t in self.d.q.tracks], ["u2", "u3", "u1"])
+
+    def test_queue_status(self):
+        self.d.q.tracks = [T("u1", "A")]
+        resp = self.d._h_queue("status")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["data"]["queue_len"], 1)
+
+    def test_queue_unknown_action(self):
+        resp = self.d._h_queue("frobnicate")
+        self.assertFalse(resp["ok"])
+
+    def test_record_signal(self):
+        self.d._history = [{"url": "u1", "title": "A", "count": 1}]
+        self.d._record_signal("u1", "skip")
+        self.assertEqual(self.d._history[0]["skips"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -724,6 +724,12 @@ def _draw_header(stdscr, status: dict, w: int) -> None:
     if rem:
         m, _s = divmod(int(rem), 60)
         meta += f" · ⏰ {m}m"
+    mood = status.get("mood")
+    if mood:
+        refine = " ".join(x for x in (status.get("mood_lang"), status.get("mood_artist")) if x)
+        meta += f" · 🎧 {mood}" + (f"·{refine}" if refine else "")
+    if status.get("smart_queue"):
+        meta += " · ⚡smart"
     err = status.get("error")
     if err:
         meta += f"   [!] {err}"
@@ -741,14 +747,16 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
     page = bottom - top
     if page <= 0:
         return
+    items_page = max(1, page // 2)  # premium two-line rows (title + artist)
     focus = qsel if 0 <= qsel < len(vis) else 0
-    start = max(0, min(focus - page // 2, max(0, len(vis) - page)))
-    for k in range(start, min(len(vis), start + page)):
+    start = max(0, min(focus - items_page // 2, max(0, len(vis) - items_page)))
+    for k in range(start, min(len(vis), start + items_page)):
         real_idx, t = vis[k]
         is_cur, is_sel = real_idx == cur, k == qsel
+        row = top + (k - start) * 2
         mark = "▶" if is_cur else ("▸" if is_sel else " ")
-        body = f"{mark} {real_idx + 1:2}  {t['title'][: max(0, w - 18)]}"
-        text = f"{body:<{max(0, w - 10)}}  {_fmt_time(t.get('duration')):>5}"
+        body = f"{mark} {real_idx + 1:2}  {t.get('title', '')}"
+        text = f"{body[: max(0, w - 12)]:<{max(0, w - 10)}}  {_fmt_time(t.get('duration')):>5}"
         if is_sel and is_cur:
             attr = curses.color_pair(2) | curses.A_REVERSE
         elif is_sel:
@@ -758,9 +766,16 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
         else:
             attr = curses.color_pair(6)
         try:
-            stdscr.addstr(top + (k - start), 0, text[: w - 1], attr)
+            stdscr.addstr(row, 0, text[: w - 1], attr)
         except curses.error:
             pass
+        ch = (t.get("channel") or "").strip()
+        if ch and row + 1 < bottom:
+            ch_attr = (curses.color_pair(2) | curses.A_DIM) if is_cur else (curses.color_pair(6) | curses.A_DIM)
+            try:
+                stdscr.addstr(row + 1, 0, f"    {ch}"[: w - 1], ch_attr)
+            except curses.error:
+                pass
 
 
 def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str]) -> None:

@@ -28,6 +28,16 @@ tune search "song name"       # list YouTube results, then play one
 tune play "song1" "song2"     # play one song, or a whole list at once
 tune play <youtube_playlist_url>   # play a whole YouTube playlist
 tune mix "lo-fi beats"        # search, shuffle, and play immediately
+tune mood focus               # intelligent session for a mood (14 moods)
+tune mood sad hindi           # + optional language
+tune mood sad hindi arijit singh  # + optional artist alias
+tune radio "tame impala"      # radio from an artist, song, genre, or URL
+tune similar                  # tracks like the current song
+tune discover                 # fresh tracks you haven't heard
+tune queue smart              # smart continuation (learns from your listening)
+tune queue add <q> | remove <n> | move <from> <to> | shuffle | clear
+tune play "something like frank ocean"   # natural-language routing
+tune play "music for studying"           # ...to a mood session
 tune add "song"               # queue without interrupting (dedupes repeats)
 tune pause | resume | toggle
 tune next | prev | stop       # prev walks back through what you actually heard

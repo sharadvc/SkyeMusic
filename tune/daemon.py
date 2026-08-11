@@ -29,6 +29,15 @@ from .art import render as render_art
 from .config import Config
 from .lyrics import fetch as fetch_lyrics
 from .lyrics import fetch_lrclib
+from .musicbrain import (
+    MOODS,
+    build_discovery_session,
+    build_mood_session,
+    build_radio_session,
+    build_similar_session,
+    detect_intent,
+    parse_mood_arg,
+)
 from .player import MpvError, MpvHandle
 from .queue import (
     BOOKMARKS_FILE,
@@ -160,6 +169,9 @@ class Daemon:
         self._last_load_was_direct = False
         self._sq_running = False  # one smart-queue refill at a time
         self._gapless_loaded: int | None = None  # index preloaded via append-play
+        self._session_mood: str | None = None  # active mood context (for continuation)
+        self._session_lang: str | None = None  # optional language qualifier
+        self._session_artist: str | None = None  # optional artist alias
         self._sleep_deadline: float | None = None  # time.monotonic deadline for sleep timer
         self._sleep_original_vol: int = 0  # saved volume for the fade-out ramp
         self._favs: list[dict] = self._load_favorites()
@@ -421,6 +433,7 @@ class Daemon:
                     threading.Thread(target=self._scrobble,
                                      args=(t.title, t.channel, t.url, t.duration),
                                      daemon=True).start()
+                    self._record_signal(now.url, "completed")
                 self._record_position_locked()
                 self._advance_locked()
             elif reason == "error":
@@ -431,6 +444,9 @@ class Daemon:
                     self._load_current_locked()
                     return
                 self._error_streak += 1
+                now = self.q.current()
+                if now:
+                    self._record_signal(now.url, "skip")
                 if self._error_streak >= 3:
                     self._error = "3 consecutive tracks failed to play"
                     self._state = "idle"
@@ -545,8 +561,18 @@ class Daemon:
                              daemon=True).start()
 
     def _smart_queue_refill(self, url: str) -> None:
+        mood = self._session_mood
+        tracks: list[Track] = []
         try:
-            tracks = resolve_radio(url)
+            tracks = list(resolve_radio(url))
+            # when a mood session is active, blend in mood-appropriate picks
+            if mood:
+                ctx = self._session_ctx()
+                extra = build_mood_session(mood, self._engine_search, limit=8,
+                                           avoid=ctx["avoid"] | {url},
+                                           lang=self._session_lang,
+                                           artist=self._session_artist)
+                tracks += extra
         except Exception as e:
             log(f"smart queue failed: {e}")
             self._sq_running = False
@@ -556,7 +582,9 @@ class Daemon:
             with self._op_lock:
                 with self._lock:
                     existing = {t.url for t in self.q.tracks}
-                    fresh = [t for t in tracks if t.url not in existing][:20]
+                    recent = {h.get("url") for h in self._history[:40] if h.get("url")}
+                    fresh = [t for t in tracks
+                             if t.url not in existing and t.url not in recent][:20]
                     added = len(fresh)
                     if fresh:
                         self.q.tracks.extend(fresh)
@@ -620,6 +648,17 @@ class Daemon:
         tmp.write_text(json.dumps(self._history, indent=2))
         os.replace(tmp, HISTORY_FILE)
 
+    def _record_signal(self, url: str, kind: str) -> None:
+        """Record a listening signal (skip/completed) on a history entry."""
+        key = "skips" if kind == "skip" else kind
+        for h in self._history:
+            if h.get("url") == url:
+                h[key] = h.get(key, 0) + 1
+                if kind == "skip":
+                    h["last_skip_ts"] = int(time.time())
+                break
+        self._save_history()
+
     def _load_bookmarks(self) -> list[dict]:
         try:
             data = json.loads(BOOKMARKS_FILE.read_text())
@@ -642,6 +681,8 @@ class Daemon:
         for i, h in enumerate(self._history):
             if h.get("url") == now.url:
                 h["count"] = h.get("count", 1) + 1
+                if time.time() - h.get("ts", 0) < 300:
+                    h["replays"] = h.get("replays", 0) + 1  # played again recently
                 h["ts"] = int(time.time())
                 self._history.pop(i)
                 self._history.insert(0, h)
@@ -815,6 +856,11 @@ class Daemon:
             "play": self._h_play,
             "add": self._h_add,
             "mix": self._h_mix,
+            "mood": self._h_mood,
+            "radio": self._h_radio,
+            "similar": self._h_similar,
+            "discover": self._h_discover,
+            "queue": self._h_queue,
             "search": self._h_search,
             "suggest": self._h_suggest,
             "next": self._h_next,
@@ -898,10 +944,73 @@ class Daemon:
                     return
             time.sleep(0.05)
 
+    # --- music intelligence (engine adapters) -------------------------------
+
+    def _engine_search(self, seed: str, limit: int = 6) -> list[Track]:
+        key = f"engine:{seed}:{limit}"
+        data = self._cache_get(self._search_cache, key)
+        if data is None:
+            results = search(seed, limit=limit)
+            data = [t.as_json() for t in results]
+            self._cache_put(self._search_cache, key, data)
+        return [Track(**d) for d in data]
+
+    def _engine_radio(self, url: str) -> list[Track]:
+        return resolve_radio(url)
+
+    def _engine_resolve(self, seed: str) -> Track:
+        return self._cached_resolve(seed)
+
+    def _session_ctx(self) -> dict:
+        """Preferences + avoid-set derived from history/favorites/queue."""
+        avoid = {t.url for t in self.q.tracks}
+        avoid |= {h.get("url") for h in self._history[:40] if h.get("url")}
+        fav_artists = {f.get("channel", "").lower() for f in self._favs if f.get("channel")}
+        top: dict[str, float] = {}
+        for h in self._history[:30]:
+            ch = (h.get("channel") or "").lower()
+            if ch:
+                top[ch] = top.get(ch, 0.0) + min(1.5, (h.get("count") or 1) * 0.3)
+        return {"avoid": avoid,
+                "prefs": {"fav_artists": fav_artists, "top_artists": top}}
+
+    def _play_tracks(self, tracks: list[Track], *, mood: str | None = None,
+                     lang: str | None = None, artist: str | None = None) -> None:
+        """Replace the queue with `tracks` and start playing (shared by sessions)."""
+        with self._op_lock:
+            with self._lock:
+                if self.q.tracks:
+                    self._undo.append(("replace",
+                                       [t.as_json() for t in self.q.tracks],
+                                       self.q.index))
+                    self._undo = self._undo[-20:]
+                self._clear_back()
+                self._play_gen += 1
+                self._pending_arg = None
+                self._restore_pos = None
+                self._session_mood = mood
+                self._session_lang = lang
+                self._session_artist = artist
+                self.q.tracks = tracks
+                self.q.index = 0
+                self.q.shuffle = False
+                self._load_current_locked()
+        self._spawn_enrich(tracks)
+
     def _h_play(self, arg) -> dict:
         args = arg if isinstance(arg, list) else [arg]
         if not args or not all(isinstance(a, str) and a.strip() for a in args):
             return {"ok": False, "error": "empty play request"}
+        # natural language: "play something like Frank Ocean", "sad songs",
+        # "music for studying" -> route to the music-intelligence sessions.
+        if len(args) == 1:
+            kind, payload = detect_intent(args[0])
+            if kind == "mood":
+                return self._h_mood(payload)
+            if kind == "radio":
+                return self._h_radio(payload)
+            if kind == "similar":
+                return self._h_similar(payload)
         # Stop immediately and report "loading <arg>" while we resolve, so
         # play feels instant even on a cold (uncached) search. The slow
         # yt-dlp work happens WITHOUT holding _op_lock so transport keys
@@ -916,6 +1025,9 @@ class Daemon:
                 self._clear_back()  # new context; prev now means nothing before this
                 self._play_gen += 1
                 gen = self._play_gen
+                self._session_mood = None  # a plain play leaves any mood session
+                self._session_lang = None
+                self._session_artist = None
                 self.q.tracks = []
                 self.q.index = -1
                 self.q.shuffle = False
@@ -1015,33 +1127,162 @@ class Daemon:
             if not tracks:
                 return {"ok": False, "error": "nothing to play"}
             shuffled = shuffle_no_adjacent(tracks, key=lambda t: t.channel)
-            with self._lock:
-                if self.q.tracks:
-                    self._undo.append(("replace",
-                                       [t.as_json() for t in self.q.tracks],
-                                       self.q.index))
-                    self._undo = self._undo[-20:]
-                self._clear_back()
-                self._play_gen += 1
-                self._pending_arg = None
-                self._restore_pos = None
-                self.q.tracks = shuffled
-                self.q.index = 0
-                self.q.shuffle = False
-                self._load_current_locked()
-        self._spawn_enrich(shuffled)
+        self._play_tracks(shuffled)
         return {"ok": True, "data": {"title": shuffled[0].title,
                                      "count": len(shuffled)}}
+
+    def _h_mood(self, arg: str) -> dict:
+        """Build and play an intelligent session for a mood.
+
+        Supports `mood <mood> [language] [artist alias]`, e.g. "sad hindi",
+        "focus english", "sad punjabi sidhu moose wala".
+        """
+        mood, lang, artist = parse_mood_arg(arg)
+        if mood is None:
+            return {"ok": False, "error":
+                    f"unknown mood {arg!r} — try: {', '.join(sorted(MOODS))} "
+                    "[language] [artist]"}
+        ctx = self._session_ctx()
+        if artist:
+            ctx["prefs"] = {**ctx["prefs"], "artist": artist}
+        limit = int(self.cfg.get("mix_count", 16))
+        try:
+            tracks = build_mood_session(mood, self._engine_search, limit=limit,
+                                        avoid=ctx["avoid"], prefs=ctx["prefs"],
+                                        lang=lang, artist=artist)
+        except Exception as e:
+            return {"ok": False, "error": f"could not build a session: {e}"}
+        if not tracks:
+            return {"ok": False, "error": "could not build a session — network down?"}
+        self._play_tracks(tracks, mood=mood, lang=lang, artist=artist)
+        return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks),
+                                     "mood": mood, "lang": lang, "artist": artist}}
+
+    def _h_radio(self, arg: str) -> dict:
+        """Radio from a seed (artist / song / genre / URL)."""
+        seed = arg.strip()
+        if not seed:
+            return {"ok": False, "error": "radio needs a seed (artist, song, genre, or URL)"}
+        ctx = self._session_ctx()
+        limit = int(self.cfg.get("mix_count", 16))
+        try:
+            tracks = build_radio_session(seed, self._engine_resolve, self._engine_radio,
+                                         self._engine_search, limit=limit,
+                                         avoid=ctx["avoid"], prefs=ctx["prefs"])
+        except Exception as e:
+            return {"ok": False, "error": f"could not build a session: {e}"}
+        if not tracks:
+            return {"ok": False, "error": f"no results for {seed!r}"}
+        self._play_tracks(tracks, mood=None)
+        return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks),
+                                     "seed": seed}}
+
+    def _h_similar(self, arg: str) -> dict:
+        """Play tracks related to a song (or the current one if arg empty)."""
+        seed = arg.strip()
+        if not seed:
+            with self._lock:
+                now = self.q.current()
+            if now is None:
+                return {"ok": False, "error": "nothing playing — give a song to compare"}
+            seed = now.title
+        ctx = self._session_ctx()
+        limit = int(self.cfg.get("mix_count", 16))
+        try:
+            tracks = build_similar_session(seed, self._engine_resolve, self._engine_radio,
+                                           self._engine_search, limit=limit,
+                                           avoid=ctx["avoid"], prefs=ctx["prefs"])
+        except Exception as e:
+            return {"ok": False, "error": f"could not build a session: {e}"}
+        if not tracks:
+            return {"ok": False, "error": f"no related tracks for {seed!r}"}
+        self._play_tracks(tracks, mood=None)
+        return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks),
+                                     "seed": seed}}
+
+    def _h_discover(self, _arg: str = "") -> dict:
+        """Fresh tracks you probably haven't heard (deduped against history)."""
+        seen = {h.get("url") for h in self._history if h.get("url")}
+        ctx = self._session_ctx()
+        limit = int(self.cfg.get("mix_count", 16))
+        try:
+            tracks = build_discovery_session(self._engine_search, limit=limit,
+                                             seen=seen, avoid=ctx["avoid"],
+                                             prefs=ctx["prefs"])
+        except Exception as e:
+            return {"ok": False, "error": f"could not build a session: {e}"}
+        if not tracks:
+            return {"ok": False, "error": "nothing new to discover right now"}
+        self._play_tracks(tracks, mood=None)
+        return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks)}}
+
+    def _h_queue(self, arg) -> dict:
+        """`queue add <q> | remove <n> | move <from> <to> | shuffle | clear | smart`."""
+        if not isinstance(arg, str):
+            arg = " ".join(arg) if isinstance(arg, list) else str(arg)
+        parts = arg.strip().split(None, 1)
+        action = parts[0].lower() if parts else ""
+        rest = parts[1] if len(parts) > 1 else ""
+        if action == "add" and rest:
+            return self._h_add(rest.split())
+        if action == "remove" and rest:
+            return self._h_remove(rest.split()[0])
+        if action == "move" and rest:
+            return self._h_move(rest)
+        if action == "shuffle":
+            return self._h_shuffle()
+        if action == "clear":
+            return self._h_clear()
+        if action == "smart":
+            self.cfg.set("smart_queue", True)
+            with self._lock:
+                now = self.q.current()
+            if now:
+                threading.Thread(target=self._smart_queue_refill,
+                                 args=(now.url,), daemon=True).start()
+            return {"ok": True, "data": {"smart_queue": True}}
+        if action in ("", "status"):
+            with self._lock:
+                return {"ok": True, "data": {
+                    "queue_len": len(self.q.tracks),
+                    "index": self.q.index,
+                    "smart_queue": bool(self.cfg.get("smart_queue")),
+                    "mood": self._session_mood,
+                    "tracks": [{"title": t.title, "channel": t.channel, "url": t.url}
+                               for t in self.q.tracks]}}
+        return {"ok": False, "error":
+                "queue: add <q> | remove <n> | move <from> <to> | shuffle | clear | smart"}
 
     def _h_search(self, arg: str) -> dict:
         data = self._cache_get(self._search_cache, arg)
         if data is None:
-            results = search(arg, limit=8)
-            data = [
-                {"title": t.title, "duration": t.duration,
-                 "channel": t.channel, "url": t.url}
-                for t in results
-            ]
+            kind, payload = detect_intent(arg)
+            if kind in ("mood", "radio", "similar"):
+                # intent search: return a curated set from a quick session
+                ctx = self._session_ctx()
+                try:
+                    if kind == "mood":
+                        tracks = build_mood_session(payload, self._engine_search,
+                                                    limit=8, avoid=ctx["avoid"])
+                    elif kind == "radio":
+                        tracks = build_radio_session(payload, self._engine_resolve,
+                                                     self._engine_radio, self._engine_search,
+                                                     limit=8, avoid=ctx["avoid"])
+                    else:
+                        tracks = build_similar_session(payload, self._engine_resolve,
+                                                       self._engine_radio, self._engine_search,
+                                                       limit=8, avoid=ctx["avoid"])
+                except Exception:
+                    tracks = []
+                data = [{"title": t.title, "duration": t.duration,
+                         "channel": t.channel, "url": t.url} for t in tracks]
+            if data is None:
+                results = search(arg, limit=8)
+                data = [
+                    {"title": t.title, "duration": t.duration,
+                     "channel": t.channel, "url": t.url}
+                    for t in results
+                ]
             self._cache_put(self._search_cache, arg, data)
             # seed the resolve cache so playing a result is instant (no yt-dlp)
             for r in data:
@@ -1270,9 +1511,22 @@ class Daemon:
     def _h_stats(self, _arg: str = "") -> dict:
         with self._lock:
             by_count = sorted(self._history, key=lambda h: h.get("count", 0), reverse=True)[:20]
+            artists: dict[str, int] = {}
+            skips = 0
+            completions = 0
+            for h in self._history:
+                ch = (h.get("channel") or "").strip()
+                if ch:
+                    artists[ch] = artists.get(ch, 0) + h.get("count", 0)
+                skips += h.get("skips", 0)
+                completions += h.get("completed", 0)
+            top_artists = sorted(artists.items(), key=lambda kv: kv[1], reverse=True)[:10]
             return {"ok": True, "data": {
                 "most_played": by_count,
+                "top_artists": [{"artist": a, "plays": c} for a, c in top_artists],
                 "total_plays": sum(h.get("count", 0) for h in self._history),
+                "skips": skips,
+                "completed": completions,
             }}
 
     def _h_lyrics(self, arg: str = "") -> dict:
@@ -1858,6 +2112,10 @@ class Daemon:
                     "sleep_remaining": (max(0, self._sleep_deadline - time.monotonic())
                                         if self._sleep_deadline is not None else None),
                     "speed": self._speed,
+                    "mood": self._session_mood,
+                    "mood_lang": self._session_lang,
+                    "mood_artist": self._session_artist,
+                    "smart_queue": bool(self.cfg.get("smart_queue")),
                     "fav": self._is_fav(now.url if now else None),
                     "error": self._error,
                 },
