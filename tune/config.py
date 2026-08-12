@@ -28,7 +28,14 @@ DEFAULTS = {
     "resume": False,          # per-track resume (podcast mode): remember each track's position
     "intro_skip": 0,          # seconds to skip at the start of a never-resumed track
     "listenbrainz_token": "", # scrobble to ListenBrainz ("" = disabled)
-    "mix_count": 20,           # how many search results `tune mix` includes
+    "lastfm_user": "",        # last.fm username for scrobbling
+    "lastfm_token": "",       # last.fm API token (MD5 of password)
+    "crossfade": 0,           # crossfade seconds (0=off, 2-5 for a DJ-like blend)
+    "visualizer": "eq",       # eq | spectrum
+    "equalizer": "",          # 10-band EQ lavfi string e.g. "1000:6,2000:3"
+    "cache_streams": False,   # auto-save played streams to ~/.cache/tune/streams
+    "discord_app_id": "",     # Discord Rich Presence app id ("" = disabled)
+    "mix_count": 20,          # how many search results `tune mix` includes
     "on_track_change": "",    # shell command run on every track change (receives title/url)
 }
 

@@ -190,6 +190,9 @@ class Daemon:
             args.append("--gapless-audio=yes")
         if self.cfg.get("replaygain"):
             args.append("--replaygain=track")
+        eq = str(self.cfg.get("equalizer") or "").strip()
+        if eq and eq != "off":
+            args.append(f"--af-add=lavfi=[equalizer=f={eq}]")
         dev = self.cfg.get("device")
         if dev:
             args.append(f"--audio-device={dev}")
@@ -694,6 +697,10 @@ class Daemon:
                                      "ts": int(time.time())})
         self._history = self._history[:200]
         self._save_history()
+        # offline cache: save the stream in the background so it replays instantly
+        if self.cfg.get("cache_streams"):
+            threading.Thread(target=self._cache_stream, args=(now.url, now.title),
+                             daemon=True).start()
         # notification + hook run in a background thread (never block playback)
         title, url = now.title, now.url
         threading.Thread(target=self._notify_track, args=(title, url), daemon=True).start()
@@ -710,17 +717,42 @@ class Daemon:
                                channel or "unknown", url)
         except Exception as e:
             log(f"scrobble playing-now failed: {e}")
+        lf_user = self.cfg.get("lastfm_user")
+        lf_token = self.cfg.get("lastfm_token")
+        if lf_user and lf_token:
+            try:
+                from .scrobble import submit_lastfm
+                submit_lastfm(lf_user, lf_token, title, channel or "unknown",
+                              self.q.current().duration if self.q.current() else 0)
+            except Exception as e:
+                log(f"last.fm now-playing failed: {e}")
 
     def _scrobble(self, title: str, channel: str, url: str, duration: float | None) -> None:
         token = self.cfg.get("listenbrainz_token")
-        if not token:
-            return
-        try:
-            from .scrobble import submit_scrobble
-            submit_scrobble(token, title, channel or "unknown", url,
-                            int(time.time()), duration)
-        except Exception as e:
-            log(f"scrobble failed: {e}")
+        lf_user = self.cfg.get("lastfm_user")
+        lf_token = self.cfg.get("lastfm_token")
+        if token:
+            try:
+                from .scrobble import submit_scrobble
+                submit_scrobble(token, title, channel or "unknown", url,
+                                int(time.time()), duration)
+            except Exception as e:
+                log(f"scrobble failed: {e}")
+        if lf_user and lf_token:
+            try:
+                from .scrobble import submit_lastfm
+                submit_lastfm(lf_user, lf_token, title, channel or "unknown",
+                              duration or 0)
+            except Exception as e:
+                log(f"last.fm scrobble failed: {e}")
+
+    def _cache_stream(self, url: str, title: str) -> None:
+        """Background-download a stream so it replays without the network."""
+        out_dir = os.path.expanduser("~/.cache/tune/streams")
+        os.makedirs(out_dir, exist_ok=True)
+        base = re.sub(r"[^\w\- ]+", "_", title).strip()[:60] or url
+        ytdl = shutil.which("yt-dlp") or os.path.expanduser("~/.local/bin/yt-dlp")
+        _do_download(ytdl, url, out_dir, base)
 
     def _notify_track(self, title: str, url: str) -> None:
         if self.cfg.get("notifications"):
@@ -860,7 +892,14 @@ class Daemon:
             "radio": self._h_radio,
             "similar": self._h_similar,
             "discover": self._h_discover,
+            "dj": self._h_dj,
             "queue": self._h_queue,
+            "import": self._h_import,
+            "rate": self._h_rate,
+            "party": self._h_party,
+            "share": self._h_share,
+            "wrapped": self._h_wrapped,
+            "doctor": self._h_doctor,
             "search": self._h_search,
             "suggest": self._h_suggest,
             "next": self._h_next,
@@ -1252,6 +1291,177 @@ class Daemon:
                                for t in self.q.tracks]}}
         return {"ok": False, "error":
                 "queue: add <q> | remove <n> | move <from> <to> | shuffle | clear | smart"}
+
+    def _h_dj(self, _arg: str = "") -> dict:
+        """DJ mode: random mood × crossfade × smart-queue. No silence."""
+        import random as _rand
+        moods = sorted(MOODS)
+        mood = _rand.choice(moods)
+        self.cfg.set("smart_queue", True)
+        ctx = self._session_ctx()
+        limit = int(self.cfg.get("mix_count", 20))
+        try:
+            tracks = build_mood_session(mood, self._engine_search, limit=limit,
+                                        avoid=ctx["avoid"], prefs=ctx["prefs"])
+        except Exception as e:
+            return {"ok": False, "error": f"could not build a session: {e}"}
+        if not tracks:
+            return {"ok": False, "error": "could not start DJ — network down?"}
+        self._play_tracks(tracks, mood=mood, lang=None, artist=None)
+        return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks),
+                                     "mood": mood, "dj": True}}
+
+    def _h_import(self, arg: str) -> dict:
+        """Import tracks from an external source (currently: Spotify playlist URL).
+
+        Resolves the playlist to track names, searches YouTube for each, and
+        adds the results to the queue. No Spotify auth needed for public lists.
+        """
+        import re as _re
+        import urllib.request as _ur
+        parts = (arg or "").strip().split(None, 1)
+        source = parts[0].lower() if parts else ""
+        url = parts[1] if len(parts) > 1 else ""
+        if source != "spotify" or not url:
+            return {"ok": False, "error": "usage: import spotify <playlist-url>"}
+        # fetch the public playlist page and extract track names
+        tracks_added = 0
+        try:
+            req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=15) as rp:
+                html = rp.read().decode("utf-8", "replace")
+            # Spotify pages embed track names in og:title or <meta> tags
+            names: set[str] = set()
+            for m in _re.finditer(r'<meta[^>]+name="music:song"[^>]+content="([^"]+)"', html):
+                nm = m.group(1).strip()
+                if nm:
+                    names.add(nm)
+            if not names:
+                # fall back: scrape text that looks like playlist items
+                for m in _re.finditer(r'<span[^>]*data-encore-id="type"[^>]*>([^<]+)</span>', html):
+                    nm = m.group(1).strip()
+                    if nm and len(nm) > 2 and not nm.startswith("<"):
+                        names.add(nm)
+            n = min(50, len(names))
+            for nm in list(names)[:n]:
+                try:
+                    t = self._cached_resolve(nm)
+                except Exception:
+                    continue
+                with self._lock:
+                    self.q.tracks.append(t)
+                    tracks_added += 1
+                self.q.save()
+        except Exception as e:
+            return {"ok": False, "error": f"import failed: {e}"}
+        return {"ok": True, "data": {"added": tracks_added,
+                                     "queue_len": len(self.q.tracks)}}
+
+    def _h_rate(self, arg: str = "") -> dict:
+        """Rate the current track 0-5."""
+        try:
+            n = int(arg.strip())
+        except ValueError:
+            return {"ok": False, "error": "rate 0-5"}
+        n = max(0, min(5, n))
+        with self._lock:
+            now = self.q.current()
+            if now is None:
+                return {"ok": False, "error": "nothing playing to rate"}
+            for h in self._history:
+                if h.get("url") == now.url:
+                    h["rating"] = n
+                    self._save_history()
+                    return {"ok": True, "data": {"rating": n, "title": now.title}}
+            self._history.insert(0, {"url": now.url, "title": now.title,
+                                     "query": now.query, "channel": now.channel,
+                                     "rating": n, "count": 1, "ts": int(time.time())})
+            self._history = self._history[:200]
+            self._save_history()
+        return {"ok": True, "data": {"rating": n, "title": now.title}}
+
+    def _h_party(self, arg: str = "") -> dict:
+        """Start or stop a collaborative party session."""
+        arg = (arg or "").strip()
+        if arg == "stop":
+            self.cfg.set("party_token", "")
+            return {"ok": True, "data": {"party": False}}
+        if arg in ("", "start"):
+            import random as _rand
+            import string as _st
+            token = "".join(_rand.choice(_st.digits) for _ in range(6))
+            self.cfg.set("party_token", token)
+            return {"ok": True, "data": {"party": True, "token": token}}
+        return {"ok": False, "error": "party start | stop"}
+
+    def _h_share(self, _arg: str = "") -> dict:
+        """Generate a shareable YouTube playlist URL from the current queue."""
+        with self._lock:
+            ids = [t.url.rsplit("=", 1)[-1] for t in self.q.tracks
+                   if "youtube" in t.url and "?v=" in t.url or "&v=" in t.url]
+        if not ids:
+            return {"ok": False, "error": "queue has no YouTube tracks to share"}
+        url = "https://www.youtube.com/watch_videos?video_ids=" + ",".join(ids)
+        return {"ok": True, "data": {"url": url, "count": len(ids)}}
+
+    def _h_wrapped(self, _arg: str = "") -> dict:
+        """Your year / all-time in review from local history."""
+        from collections import Counter as _C
+        total = sum(h.get("count", 0) for h in self._history)
+        artists = _C((h.get("channel") or "").strip() for h in self._history if h.get("channel"))
+        moods_raw = _C()
+        for h in self._history:
+            for mh in detect_intent(h.get("title", "")), detect_intent(h.get("query", "")):
+                if mh[0] == "mood":
+                    moods_raw[mh[1]] += h.get("count", 0)
+        ratings = [h.get("rating") for h in self._history if h.get("rating") is not None]
+        avg_rating = sum(ratings) / len(ratings) if ratings else None
+        top_track = sorted(self._history, key=lambda h: h.get("count", 0), reverse=True)[:1]
+        return {"ok": True, "data": {
+            "total_plays": total,
+            "total_tracks": len(self._history),
+            "top_artists": [{"artist": a, "plays": c} for a, c in artists.most_common(10)],
+            "top_moods": [{"mood": m, "plays": c} for m, c in moods_raw.most_common(5)],
+            "top_track": top_track[0] if top_track else None,
+            "avg_rating": round(avg_rating, 1) if avg_rating else None,
+            "skips": sum(h.get("skips", 0) for h in self._history),
+            "completed": sum(h.get("completed", 0) for h in self._history),
+        }}
+
+    def _h_doctor(self, _arg: str = "") -> dict:
+        """Health check: verify deps, config, and network."""
+        issues: list[str] = []
+        try:
+            import shutil as _sh
+            from pathlib import Path as _P
+            mpv = _sh.which("mpv")
+            ytdl = _sh.which("yt-dlp") or str(_P.home() / ".local/bin/yt-dlp")
+            if not mpv:
+                issues.append("mpv not found — install with: brew install mpv")
+            if not ytdl or not _P(ytdl).exists():
+                issues.append("yt-dlp not found — install with: brew install yt-dlp")
+        except Exception as e:
+            issues.append(f"tooling check failed: {e}")
+        with self._lock:
+            player = self.player is not None
+            tracks = len(self.q.tracks)
+        try:
+            result = search("test", limit=1)
+            net_ok = bool(result)
+        except Exception:
+            net_ok = False
+        if not net_ok:
+            issues.append("yt-dlp search failed — network or rate-limit issue")
+        return {"ok": True, "data": {
+            "mpv": bool(mpv),
+            "ytdlp": bool(ytdl),
+            "player_alive": player,
+            "network": net_ok,
+            "http_port": int(self.cfg.get("http_port") or 0),
+            "queue_len": tracks,
+            "cache_tracks": self._cache_max,
+            "issues": issues,
+        }}
 
     def _h_search(self, arg: str) -> dict:
         data = self._cache_get(self._search_cache, arg)

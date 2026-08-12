@@ -211,7 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("action", nargs="?", default="status",
                    help="add | remove | move | shuffle | clear | smart")
     q.add_argument("args", nargs="*", help="action arguments")
-    sub.add_parser("search").add_argument("query", help="search YouTube and list results")
+    sr = sub.add_parser("search", help="search YouTube (or --source soundcloud) and list results")
+    sr.add_argument("--source", default="", help="source: youtube | soundcloud")
+    sr.add_argument("query")
     sub.add_parser("pause", help="pause playback")
     sub.add_parser("resume", help="resume playback")
     sub.add_parser("toggle", help="play/pause toggle")
@@ -252,7 +254,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stats", help="most-played stats")
     sub.add_parser("lyrics", help="show synced lyrics for the current track")
     sub.add_parser("art", help="show terminal album art for the current track")
-    sub.add_parser("share", help="copy the current track's URL to the clipboard")
+    sub.add_parser("share", help="copy the current track's URL, or --queue for the whole queue").add_argument(
+        "--queue", action="store_true", help="share the full queue as a playlist URL")
+    sub.add_parser("dj", help="start a DJ session (random mood + crossfade + smart queue)")
+    sub.add_parser("import").add_argument("arg", nargs="+", help="import spotify <playlist-url>")
+    sub.add_parser("rate").add_argument("n", type=int, choices=range(6), help="rate the current track 0-5")
+    sub.add_parser("party").add_argument("action", nargs="?", default="start", help="start | stop")
+    sub.add_parser("wrapped", help="your all-time listening in review")
+    sub.add_parser("doctor", help="health check (mpv, yt-dlp, network)")
     sub.add_parser("remote", help="show the phone/HTTP remote URL")
     pl = sub.add_parser("playlist", help="manage named playlists")
     pl.add_argument("action",
@@ -287,13 +296,23 @@ def run(argv: list[str]) -> int:
         return 0
     if args.cmd == "share":
         try:
-            resp = send_cmd("info")
-            url = (resp.get("data") or {}).get("url") if resp.get("ok") else None
-            if not url:
-                print("tune: nothing playing to share", file=sys.stderr)
-                return 1
-            subprocess.run(["pbcopy"], input=url.encode())
-            print(f"✓ copied {url}")
+            if args.queue:
+                resp = send_cmd("share")
+                data = resp.get("data") or {}
+                url = data.get("url")
+                if not url:
+                    print("tune: queue has no YouTube tracks", file=sys.stderr)
+                    return 1
+                subprocess.run(["pbcopy"], input=url.encode())
+                print(f"✓ copied {data.get('count')} tracks → {url}")
+            else:
+                resp = send_cmd("info")
+                url = (resp.get("data") or {}).get("url") if resp.get("ok") else None
+                if not url:
+                    print("tune: nothing playing to share", file=sys.stderr)
+                    return 1
+                subprocess.run(["pbcopy"], input=url.encode())
+                print(f"✓ copied {url}")
         except Exception as e:
             print(f"tune: {e}", file=sys.stderr)
             return 1
@@ -334,7 +353,24 @@ def run(argv: list[str]) -> int:
     elif verb == "queue":
         arg = " ".join([args.action] + list(args.args))
     elif verb == "search":
+        src = args.source
         arg = args.query
+        if src == "soundcloud":
+            arg = f"scsearch:{args.query}"
+        elif src:
+            arg = f"{src}search:{args.query}"
+    elif verb == "dj":
+        arg = ""
+    elif verb == "import":
+        arg = " ".join(args.arg)
+    elif verb == "rate":
+        arg = str(args.n)
+    elif verb == "party":
+        arg = args.action
+    elif verb == "wrapped":
+        arg = ""
+    elif verb == "doctor":
+        arg = ""
     elif verb == "playlist":
         arg = [args.action, args.name]
     elif verb == "recents":
@@ -437,6 +473,9 @@ def run(argv: list[str]) -> int:
         cnt = (data.get("count") or 1) - 1
         extra = f"  (+{cnt} more shuffled)" if cnt > 0 else ""
         print(f"🎲 {data.get('title')}{extra}")
+    elif verb == "dj":
+        cnt = (data.get("count") or 1) - 1
+        print(f"🎧⚡ DJ: {data.get('mood')} · {data.get('title')}  (+{cnt} more)")
     elif verb == "mood":
         cnt = (data.get("count") or 1) - 1
         refine = " ".join(x for x in (data.get("lang"), data.get("artist")) if x)
@@ -451,6 +490,34 @@ def run(argv: list[str]) -> int:
     elif verb == "discover":
         cnt = (data.get("count") or 1) - 1
         print(f"✨ discover: {data.get('title')}  (+{cnt} more)")
+    elif verb == "rate":
+        print(f"{'⭐' * data.get('rating', 0)}  {data.get('title')}")
+    elif verb == "party":
+        if data.get("party"):
+            print(f"🎉 party started — token: {data.get('token')}")
+        else:
+            print("party stopped")
+    elif verb == "import":
+        print(f"⇣ imported {data.get('added')} tracks  (queue: {data.get('queue_len')})")
+    elif verb == "wrapped":
+        print("🎁 tune wrapped:")
+        print(f"    total plays: {data.get('total_plays')} · tracks: {data.get('total_tracks')}")
+        print(f"    skips: {data.get('skips')} · completed: {data.get('completed')}")
+        if data.get('avg_rating'):
+            print(f"    avg rating: {data.get('avg_rating')} / 5")
+        print(f"    top artists: {', '.join(a['artist'] for a in (data.get('top_artists') or [])[:5])}")
+        if data.get('top_track'):
+            print(f"    most played: {data['top_track']['title']} ({data['top_track']['count']}×)")
+    elif verb == "doctor":
+        issues = data.get("issues") or []
+        print("🏥 tune health check")
+        print(f"    mpv: {'✓' if data.get('mpv') else '✗ missing'}")
+        print(f"    yt-dlp: {'✓' if data.get('ytdlp') else '✗ missing'}")
+        print(f"    player: {'✓ running' if data.get('player_alive') else '… not spawned'}")
+        print(f"    network: {'✓ ok' if data.get('network') else '✗ may be down/rate-limited'}")
+        if issues:
+            for i in issues:
+                print(f"    [!] {i}")
     elif verb == "queue":
         if data.get("tracks") is not None:
             mood = f" · mood {data.get('mood')}" if data.get("mood") else ""

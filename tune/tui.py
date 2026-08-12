@@ -91,6 +91,14 @@ _NOW_HELP = ("space pause · n/p next/prev · ↑/↓ select · d remove · ente
 _SEARCH_HELP = "enter play · tab add to queue · ↑/↓ move · backspace edit · esc back"
 
 
+def _visualizer() -> str:
+    try:
+        from .config import Config
+        return str(Config().get("visualizer", "eq")).strip()
+    except Exception:
+        return "eq"
+
+
 def _fmt_time(sec: float | None) -> str:
     if sec is None:
         return "LIVE"
@@ -307,6 +315,8 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         _cycle_repeat(status)
     elif ch == ord("a"):
         ui["art"] = True
+    elif ch in map(ord, "012345"):
+        _bg_send("rate", str(ch - ord("0")))
     elif ch == ord("t"):
         mode = "theme"
     elif ch == ord(":"):
@@ -660,13 +670,28 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int) -> None:
 
 
 def _draw_amp(stdscr, status: dict, amp_t: float, w: int) -> None:
-    """Animated equalizer row: bounces while playing, freezes on pause,
-    crawls while loading, lies flat when idle."""
+    """Equalizer or spectrum bars. Bounces while playing, crawls while loading."""
+    mode = _visualizer()
     state = status.get("state", "idle")
+    vol = status.get("volume", 80) or 80
+    amp = min(1.0, 0.35 + vol / 160.0)
     if state == "idle":
         line = " " * w
+    elif mode == "spectrum":
+        # 16-band pseudo-spectrum: each bar has a unique speed and phase
+        N = min(16, max(4, w // 4))
+        bar_w = max(1, (w - N + 1) // N)
+        bars = []
+        for i in range(N):
+            v = (math.sin(amp_t * (2.2 + i * 0.47) + i * 2.1) + 1) / 2.0
+            if state == "loading":
+                v = v * 0.35 + 0.2
+            h = int(round(v * amp * 7.0))
+            cell = _AMP_BLOCKS[min(7, h)] if h > 0 else " "
+            bars.append(cell * bar_w)
+        line = "".join(bars)[: w]
     else:
-        amp = min(1.0, 0.35 + (status.get("volume", 80) or 80) / 160.0)
+        # classic equalizer
         heights = []
         for i in range(w):
             v = (math.sin(amp_t * (1.6 + (i % 7) * 0.35) + i * 1.7) + 1) / 2.0
