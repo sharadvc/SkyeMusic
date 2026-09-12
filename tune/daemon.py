@@ -1449,16 +1449,28 @@ class Daemon:
 
     def _h_party(self, arg: str = "") -> dict:
         """Start or stop a collaborative party session."""
+        from .party import party_engine
         arg = (arg or "").strip()
         if arg == "stop":
             self.cfg.set("party_token", "")
+            party_engine.stop()
             return {"ok": True, "data": {"party": False}}
         if arg in ("", "start"):
             import random as _rand
             import string as _st
             token = "".join(_rand.choice(_st.digits) for _ in range(6))
             self.cfg.set("party_token", token)
-            return {"ok": True, "data": {"party": True, "token": token}}
+            party_engine.start(token)
+            port = int(self.cfg.get("http_port") or 8765)
+            return {
+                "ok": True,
+                "data": {
+                    "party": True,
+                    "token": token,
+                    "port": port,
+                    "listeners": len(party_engine.listeners),
+                },
+            }
         return {"ok": False, "error": "party start | stop"}
 
     def _h_share(self, _arg: str = "") -> dict:

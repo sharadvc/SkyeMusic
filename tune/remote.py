@@ -87,6 +87,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "pin required"}, 401)
                 return
             verb = parsed.path[len("/api/"):]
+            if verb == "party/sync":
+                client_id = self.client_address[0]
+                from .party import party_engine
+                party_engine.register_listener(client_id)
+                info = party_engine.get_info(self.daemon)
+                self._json({"ok": True, "data": info})
+                return
+            if verb == "party/info":
+                from .party import party_engine
+                info = party_engine.get_info(self.daemon)
+                self._json({"ok": True, "data": info})
+                return
+
             arg = parse_qs(parsed.query).get("arg", [""])[0]
             try:
                 resp = self.daemon.dispatch(json.dumps({"verb": verb, "arg": arg}))

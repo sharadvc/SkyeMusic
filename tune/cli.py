@@ -517,9 +517,17 @@ def run(argv: list[str]) -> int:
         print(f"{'⭐' * data.get('rating', 0)}  {data.get('title')}")
     elif verb == "party":
         if data.get("party"):
-            print(f"🎉 party started — token: {data.get('token')}")
+            token = data.get("token")
+            port = data.get("port") or 8765
+            ip = subprocess.run(["ipconfig", "getifaddr", "en0"],
+                                capture_output=True, text=True).stdout.strip()
+            party_url = f"http://{ip}:{port}?party={token}" if ip else f"http://localhost:{port}?party={token}"
+            from .qr import render_qr
+            print(f"\n🎉 Multi-Room Party Mode Started! (PIN / Token: {token})")
+            print(f"   Join sync stream on Wi-Fi: {party_url}")
+            print(render_qr(party_url))
         else:
-            print("party stopped")
+            print("🎉 Party mode stopped")
     elif verb == "import":
         print(f"⇣ imported {data.get('added')} tracks  (queue: {data.get('queue_len')})")
     elif verb == "wrapped":
