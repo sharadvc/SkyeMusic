@@ -114,7 +114,7 @@ _NOW_HELP = ("space pause · e eq · D download · M radio · tab layout · n/p 
              "+/- vol · [ ] speed · ←/→ seek · ,/. sync · l lyrics · s shuffle · r repeat · "
              "t theme · / search · q quit")
 _SEARCH_HELP = "enter play · tab add to queue · ↑/↓ move · backspace edit · esc back"
-_VIZ_MODES = ("spectrum", "stereo", "wave", "bars")
+_VIZ_MODES = ("spectrum", "stereo", "wave", "bars", "matrix", "vu", "oscilloscope")
 
 
 def _visualizer() -> str:
@@ -1320,6 +1320,119 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
             try:
                 stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
                               curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: MATRIX (Cyberpunk Falling Matrix Rain) ────────────────────
+    if mode == "matrix":
+        CHAR_POOL = "0123456789ABCDEFｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ"
+        for r in range(viz_h):
+            row_idx = viz_top + r
+            for c in range(aw):
+                seed = c * 13 + r * 7
+                drop_pos = int((amp_t * (10 + (c % 7) * 4) + seed) % (viz_h + 10)) - 5
+                dist = r - drop_pos
+                if dist == 0:
+                    ch = CHAR_POOL[int((amp_t * 15 + seed) % len(CHAR_POOL))]
+                    attr = (curses.color_pair(5) | curses.A_BOLD) if not is_paused else (curses.color_pair(6) | curses.A_DIM)
+                elif 0 < dist < 4:
+                    ch = CHAR_POOL[int((amp_t * 8 + seed + dist) % len(CHAR_POOL))]
+                    attr = (curses.color_pair(2) | curses.A_BOLD) if not is_paused else (curses.color_pair(6) | curses.A_DIM)
+                elif 4 <= dist < 8:
+                    ch = CHAR_POOL[int((seed + dist) % len(CHAR_POOL))]
+                    attr = curses.color_pair(1) | curses.A_DIM
+                else:
+                    ch = " "
+                    attr = curses.color_pair(6)
+                try:
+                    stdscr.addch(row_idx, c, ch, attr)
+                except curses.error:
+                    pass
+        if is_paused:
+            p_badge = " [ MATRIX PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            try:
+                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: VU (Dual Stereo Analog dB Level Meters) ───────────────────
+    if mode == "vu":
+        beat_l = (math.sin(amp_t * 3.6) * 0.35 + math.cos(amp_t * 7.2) * 0.2 + 0.45) * amp
+        beat_r = (math.sin(amp_t * 3.6 + 0.4) * 0.35 + math.sin(amp_t * 6.8) * 0.2 + 0.45) * amp
+        if is_paused:
+            beat_l = beat_r = 0.0
+
+        gauge_w = max(10, aw - 34)
+        db_l = -40.0 + (beat_l * 43.0)
+        db_r = -40.0 + (beat_r * 43.0)
+
+        l_fill = int(max(0.0, min(1.0, (db_l + 40.0) / 43.0)) * gauge_w)
+        r_fill = int(max(0.0, min(1.0, (db_r + 40.0) / 43.0)) * gauge_w)
+
+        l_bar = "█" * l_fill + "░" * (gauge_w - l_fill)
+        r_bar = "█" * r_fill + "░" * (gauge_w - r_fill)
+
+        line_l = f"  LEFT   [{l_bar}] {db_l:+5.1f} dB  ▲ {db_l + 1.2:+4.1f} dB"
+        line_r = f"  RIGHT  [{r_bar}] {db_r:+5.1f} dB  ▲ {db_r + 1.5:+4.1f} dB"
+        ticks  = "          -40     -20    -10    -6     -3     0     +3 dB"
+
+        rows = [ticks, line_l, line_r]
+        for idx, text in enumerate(rows):
+            if idx < viz_h:
+                row_idx = viz_top + idx
+                attr = curses.color_pair(2) | curses.A_BOLD if idx > 0 else curses.color_pair(3)
+                if is_paused:
+                    attr = curses.color_pair(6) | curses.A_DIM
+                try:
+                    stdscr.addstr(row_idx, 0, text[:aw], attr)
+                except curses.error:
+                    pass
+        return
+
+    # ── MODE: OSCILLOSCOPE (Lissajous Vector Phase-Space Curve) ─────────
+    if mode == "oscilloscope":
+        px_h = viz_h * 4
+        px_w = aw * 2
+        canvas = [[0 for _ in range(aw)] for _ in range(viz_h)]
+        DOTS = [
+            [0x01, 0x08],
+            [0x02, 0x10],
+            [0x04, 0x20],
+            [0x40, 0x80],
+        ]
+        phase = amp_t * 3.5
+        points = 240
+        for i in range(points):
+            t = (i / points) * 2 * math.pi
+            x_val = math.sin(2 * t + phase) * 0.85
+            y_val = math.sin(3 * t + phase * 1.3) * 0.85
+            if not is_paused:
+                x_val += math.cos(5 * t + phase * 2.1) * 0.12 * amp
+                y_val += math.sin(4 * t + phase * 1.8) * 0.12 * amp
+
+            py = int(round((y_val * 0.42 * amp + 0.5) * (px_h - 1)))
+            py = max(0, min(px_h - 1, py))
+            px = int(round((x_val * 0.42 * amp + 0.5) * (px_w - 1)))
+            px = max(0, min(px_w - 1, px))
+
+            inv_y = (px_h - 1) - py
+            cx = px // 2
+            cy = inv_y // 4
+            sub_x = px % 2
+            sub_y = inv_y % 4
+            if 0 <= cy < viz_h and 0 <= cx < aw:
+                canvas[cy][cx] |= DOTS[sub_y][sub_x]
+
+        for r in range(viz_h):
+            row_idx = viz_top + r
+            line = "".join(chr(0x2800 + canvas[r][c]) for c in range(aw))
+            attr = (curses.color_pair(3) | curses.A_BOLD) if not is_paused else (curses.color_pair(6) | curses.A_DIM)
+            try:
+                stdscr.addstr(row_idx, 0, line[:aw], attr)
             except curses.error:
                 pass
         return

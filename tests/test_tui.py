@@ -7,7 +7,9 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tune.tui import (
+    _VIZ_MODES,
     _cur_lyr_line,
+    _cycle_viz_mode,
     _draw,
     _draw_lyrics,
     _draw_queue,
@@ -77,6 +79,12 @@ class TestTuiLayout(unittest.TestCase):
         # 'o' resets to 0.0s
         _now_key(ord("o"), "now", status, ui)
         self.assertEqual(ui["lyr_offset"], 0.0)
+
+    def test_viz_mode_cycling(self):
+        ui = {"viz_mode": "spectrum"}
+        for expected in ["stereo", "wave", "bars", "matrix", "vu", "oscilloscope", "spectrum"]:
+            _cycle_viz_mode(ui)
+            self.assertEqual(ui["viz_mode"], expected)
 
     def test_live_position_interpolation(self):
         import time
