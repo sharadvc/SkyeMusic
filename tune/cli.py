@@ -521,11 +521,18 @@ def run(argv: list[str]) -> int:
             port = data.get("port") or 8765
             ip = subprocess.run(["ipconfig", "getifaddr", "en0"],
                                 capture_output=True, text=True).stdout.strip()
-            party_url = f"http://{ip}:{port}?party={token}" if ip else f"http://localhost:{port}?party={token}"
+            local_party_url = f"http://{ip}:{port}?party={token}" if ip else f"http://localhost:{port}?party={token}"
+            global_url = data.get("global_url")
+            global_party_url = f"{global_url}?party={token}" if global_url else None
+
+            target_qr_url = global_party_url or local_party_url
             from .qr import render_qr
             print(f"\n🎉 Multi-Room Party Mode Started! (PIN / Token: {token})")
-            print(f"   Join sync stream on Wi-Fi: {party_url}")
-            print(render_qr(party_url))
+            if local_party_url:
+                print(f"  Local Wi-Fi Join:     {local_party_url}")
+            if global_party_url:
+                print(f"  🌍 Global World Join:  {global_party_url}   (Works anywhere outside Wi-Fi over 5G/4G!)")
+            print(render_qr(target_qr_url))
         else:
             print("🎉 Party mode stopped")
     elif verb == "import":

@@ -15,22 +15,27 @@ class PartySession:
     def __init__(self):
         self.active: bool = False
         self.token: str = ""
+        self.global_url: str | None = None
         self.start_time: float = 0.0
         self.listeners: Set[str] = set()
         self._lock = threading.Lock()
 
-    def start(self, token: str) -> None:
+    def start(self, token: str, global_url: str | None = None) -> None:
         with self._lock:
             self.active = True
             self.token = token
+            self.global_url = global_url
             self.start_time = time.time()
             self.listeners.clear()
 
     def stop(self) -> None:
+        from .tunnel import stop_tunnel
         with self._lock:
             self.active = False
             self.token = ""
+            self.global_url = None
             self.listeners.clear()
+        stop_tunnel()
 
     def register_listener(self, client_id: str) -> None:
         with self._lock:
@@ -47,6 +52,7 @@ class PartySession:
             return {
                 "active": self.active,
                 "token": self.token,
+                "global_url": self.global_url,
                 "listeners_count": len(self.listeners),
                 "server_time": time.time(),
                 "track": {
