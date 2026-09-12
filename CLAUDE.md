@@ -1,4 +1,4 @@
-# tune — terminal music player (YouTube, no login)
+# Skye Player (tune) — terminal music player (YouTube, no login)
 
 Streams YouTube audio through **mpv** + **yt-dlp** with a full-screen TUI, a CLI,
 and a phone remote. **Pure Python stdlib at runtime** — no pip dependencies.

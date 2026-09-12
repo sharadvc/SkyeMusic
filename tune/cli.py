@@ -191,7 +191,7 @@ def _print_lyrics(d: dict) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="tune", description="terminal music player (YouTube, no login)")
+        prog="skye", description="Skye Player — terminal music player (YouTube, no login)")
     p.add_argument("--version", action="version", version=f"tune {__version__}")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("daemon", help="run the background player daemon (internal)")
@@ -224,7 +224,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("speed").add_argument("x", help="playback speed, e.g. 1.5 / 0.8 / 1")
     sub.add_parser("device").add_argument("name", nargs="?", default="",
                                           help="audio device name (omit to list)")
-    sub.add_parser("download").add_argument("song", help="download a song as audio")
+    sub.add_parser("download", help="download a song or current track as audio").add_argument("song", nargs="?", default="")
+    sub.add_parser("downloads", help="list offline downloaded audio tracks")
+    sub.add_parser("eq", help="cycle or set 10-band equalizer preset (flat, bass, bass_extreme, vocal, acoustic, cyberpunk, rock, pop)").add_argument("preset", nargs="?", default="next")
     sub.add_parser("seek").add_argument("amount", help="e.g. +30 / -15 / 60")
     sub.add_parser("remove").add_argument("n", type=int, help="queue position (1-based)")
     sub.add_parser("playindex").add_argument("n", type=int, help="jump to queue position (1-based)")
@@ -393,6 +395,10 @@ def run(argv: list[str]) -> int:
         arg = args.name
     elif verb == "download":
         arg = args.song
+    elif verb == "downloads":
+        arg = ""
+    elif verb == "eq":
+        arg = args.preset
     elif verb == "seek":
         arg = args.amount
     elif verb in ("remove", "playindex"):
@@ -481,9 +487,22 @@ def run(argv: list[str]) -> int:
         refine = " ".join(x for x in (data.get("lang"), data.get("artist")) if x)
         label = f"{data.get('mood')} · {refine}" if refine else data.get("mood")
         print(f"🎧 {label} · {data.get('title')}  (+{cnt} more)")
-    elif verb == "radio":
-        cnt = (data.get("count") or 1) - 1
-        print(f"📻 {data.get('seed')}: {data.get('title')}  (+{cnt} more)")
+    elif verb == "download":
+        print(f"✦ Downloader queued track: {data.get('title')} → {data.get('dir') or 'downloads'}")
+    elif verb == "downloads":
+        downloads = data.get("downloads") or {}
+        if not downloads:
+            print("no offline downloads yet — use 'tune download' to save songs offline")
+        else:
+            print(f"✦ Offline Downloads ({len(downloads)}):")
+            for i, (url, meta) in enumerate(downloads.items(), 1):
+                title = meta.get("title") or url
+                size_mb = meta.get("size", 0) / (1024 * 1024)
+                print(f"{i:2}.  {title}  [{size_mb:.1f} MB]")
+    elif verb == "eq":
+        preset = data.get("preset", "flat").upper()
+        af = data.get("af", "")
+        print(f"✦ Equalizer: {preset} ({af})")
     elif verb == "similar":
         cnt = (data.get("count") or 1) - 1
         print(f"🔀 like {data.get('seed')}: {data.get('title')}  (+{cnt} more)")
@@ -500,7 +519,7 @@ def run(argv: list[str]) -> int:
     elif verb == "import":
         print(f"⇣ imported {data.get('added')} tracks  (queue: {data.get('queue_len')})")
     elif verb == "wrapped":
-        print("🎁 tune wrapped:")
+        print("🎁 Skye Player wrapped:")
         print(f"    total plays: {data.get('total_plays')} · tracks: {data.get('total_tracks')}")
         print(f"    skips: {data.get('skips')} · completed: {data.get('completed')}")
         if data.get('avg_rating'):
@@ -510,7 +529,7 @@ def run(argv: list[str]) -> int:
             print(f"    most played: {data['top_track']['title']} ({data['top_track']['count']}×)")
     elif verb == "doctor":
         issues = data.get("issues") or []
-        print("🏥 tune health check")
+        print("🏥 Skye Player health check")
         print(f"    mpv: {'✓' if data.get('mpv') else '✗ missing'}")
         print(f"    yt-dlp: {'✓' if data.get('ytdlp') else '✗ missing'}")
         print(f"    player: {'✓ running' if data.get('player_alive') else '… not spawned'}")

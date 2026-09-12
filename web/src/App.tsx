@@ -36,6 +36,13 @@ import {
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
+const DEMON_SLAYER_STATUS = {
+  playing: "⚔️ TOTAL FOCUS",
+  paused: "🗡️ SHEATHED",
+  loading: "⚡ TRAINING",
+  idle: "👺 STANDBY",
+} as const
+
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -84,25 +91,29 @@ export default function App() {
   const pos = dragging ? seekPos : status?.position || 0
   const dur = Math.max(1, Math.round(status?.duration || 0))
   const playing = status?.state === "playing" || status?.state === "loading"
+  const dsStatus = DEMON_SLAYER_STATUS[status?.state as keyof typeof DEMON_SLAYER_STATUS] || "👺 STANDBY"
 
   return (
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col px-4 pb-16 pt-6">
+    <div className="mx-auto flex min-h-dvh max-w-md flex-col px-4 pb-16 pt-6 font-mono selection:bg-emerald-500/30">
       {/* header */}
       <header className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-base">
-            🎵
+          <div className="flex size-9 items-center justify-center rounded-xl bg-emerald-500/20 text-base shadow-sm shadow-emerald-500/30">
+            ⚔️
           </div>
-          <span className="text-lg font-bold tracking-tight">tune</span>
+          <div className="flex flex-col">
+            <span className="text-lg font-bold tracking-tight text-emerald-400">Skye Player</span>
+            <span className="text-[10px] font-semibold tracking-widest text-emerald-300/80">DEMON SLAYER CORPS</span>
+          </div>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span
             className={cn(
-              "size-1.5 rounded-full",
-              playing ? "bg-primary" : status ? "bg-muted-foreground/50" : "animate-pulse bg-muted-foreground/50",
+              "size-2 rounded-full",
+              playing ? "animate-pulse bg-emerald-400 shadow-sm shadow-emerald-400" : status ? "bg-muted-foreground/50" : "animate-pulse bg-muted-foreground/50",
             )}
           />
-          {status?.state || "connecting…"}
+          <span className="text-[11px] font-semibold text-emerald-300">{dsStatus}</span>
         </div>
       </header>
 
@@ -123,13 +134,13 @@ export default function App() {
       ) : (
         <>
           {/* now playing */}
-          <Card className="p-6 pt-8">
+          <Card className="border-emerald-500/30 bg-card/60 p-6 pt-8 backdrop-blur-xl shadow-lg shadow-emerald-500/10">
             <div className="relative mx-auto w-fit">
-              <div className="absolute -inset-10 rounded-full bg-primary/20 blur-3xl" />
+              <div className="absolute -inset-10 rounded-full bg-emerald-500/20 blur-3xl" />
               <img
                 src={art(status.url) || undefined}
                 alt=""
-                className="relative size-36 rounded-2xl object-cover shadow-2xl"
+                className="relative size-36 rounded-2xl border border-emerald-500/30 object-cover shadow-2xl"
               />
             </div>
             <div className="mt-6 text-center">

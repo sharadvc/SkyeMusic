@@ -19,6 +19,8 @@ PLAYLIST_DIR = CONFIG_DIR / "playlists"
 FAVORITES_FILE = CONFIG_DIR / "favorites.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 BOOKMARKS_FILE = CONFIG_DIR / "bookmarks.json"
+DOWNLOADS_DIR = CONFIG_DIR / "downloads"
+DOWNLOADS_INDEX = DOWNLOADS_DIR / "index.json"
 
 # Sockets live in $TMPDIR, which is per-user on macOS.
 _SOCK_DIR = Path(os.environ.get("TMPDIR", "/tmp"))

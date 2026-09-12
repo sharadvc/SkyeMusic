@@ -54,6 +54,15 @@ from .queue import (
     Track,
     shuffle_no_adjacent,
 )
+from .downloader import (
+    download_track,
+    get_downloads_index,
+    get_local_path,
+    is_downloaded,
+    remove_download,
+)
+from .eq import EQ_ORDER, EQ_PRESETS, format_mpv_eq, next_eq_preset
+from .radio import MOOD_PRESETS, resolve_radio_query
 from .resolver import (
     ResolveError,
     _is_url_or_id,
@@ -178,9 +187,11 @@ class Daemon:
         self._history: list[dict] = self._load_history()
         self._bookmarks: list[dict] = self._load_bookmarks()
         self._lyrics: dict[str, list] = {}  # url -> timed lyric lines
+        self._lyrics_in_flight: dict[str, threading.Event] = {}  # url -> in-flight event
         self._art_cache: dict[str, list] = {}  # url -> ANSI art lines
         self._undo: list = []  # ("remove", i, track) | ("clear", tr, idx) |
                               # ("replace", tr, idx) | ("shuffle", tr)
+        self._eq_preset: str = str(self.cfg.get("equalizer_preset") or "flat")
 
     # --- mpv management ----------------------------------------------------
 
@@ -201,6 +212,11 @@ class Daemon:
         with self._lock:
             self.player = handle
             handle.set_property("volume", self.q.volume)
+            if self._eq_preset and self._eq_preset != "flat":
+                try:
+                    handle.set_property("af", format_mpv_eq(self._eq_preset))
+                except Exception:
+                    pass
             for obs_id, name in ((1, "pause"), (2, "volume"),
                                  (3, "duration"), (4, "idle-active")):
                 try:
@@ -257,17 +273,53 @@ class Daemon:
         self._error = None
         self._error_streak = 0
         self._state = "loading"
-        direct = self._cached_direct(track.url)
+        local_path = get_local_path(track.url)
+        direct = self._cached_direct(track.url) if not local_path else None
+        target_path = local_path or direct or track.url
         self._last_load_url = track.url
-        self._last_load_was_direct = direct is not None
-        if direct:
+        self._last_load_was_direct = (local_path is not None) or (direct is not None)
+        if local_path:
+            log(f"loading downloaded local file: {local_path}")
+        elif direct:
             log(f"loading direct stream: {track.url}")
         try:
-            self.player.command("loadfile", direct or track.url, "replace")
+            self.player.command("loadfile", target_path, "replace")
         except MpvError as e:
             self._error = str(e)
             self._state = "idle"
         self.q.save()
+        # Background prefetch lyrics for current and upcoming tracks so track changes have 0ms latency
+        threading.Thread(target=self._prefetch_lyrics_worker, args=(track,), daemon=True).start()
+        self._prefetch_next_locked()
+
+    def _prefetch_lyrics_worker(self, track) -> None:
+        if track is None or not getattr(track, "url", None):
+            return
+        with self._lock:
+            if track.url in self._lyrics or track.url in self._lyrics_in_flight:
+                return
+            ev = threading.Event()
+            self._lyrics_in_flight[track.url] = ev
+        try:
+            lines = fetch_lyrics(
+                url=track.url,
+                title=getattr(track, "title", ""),
+                artist=getattr(track, "channel", "") or "",
+                duration=getattr(track, "duration", None),
+                query=getattr(track, "query", "") or "",
+            )
+            with self._lock:
+                self._lyrics[track.url] = lines or []
+                if len(self._lyrics) > self._cache_max:
+                    self._lyrics.pop(next(iter(self._lyrics)))
+        except Exception:
+            with self._lock:
+                if track.url not in self._lyrics:
+                    self._lyrics[track.url] = []
+        finally:
+            with self._lock:
+                self._lyrics_in_flight.pop(track.url, None)
+            ev.set()
 
     def _cached_direct(self, url: str) -> str | None:
         with self._lock:
@@ -278,14 +330,20 @@ class Daemon:
             return None
 
     def _prefetch_next_locked(self) -> None:
-        """Prefetch direct URLs for the next couple of tracks so a manual or
-        automatic advance starts almost instantly (mpv skips its yt-dlp pass)."""
+        """Prefetch direct URLs and lyrics for the next couple of tracks so track
+        changes and lyrics transitions happen in real time with zero latency."""
         idx = self.q.index
         for k in (idx + 1, idx + 2):
             if 0 <= k < len(self.q.tracks):
-                url = self.q.tracks[k].url
+                t = self.q.tracks[k]
+                url = t.url
                 if self._cached_direct(url) is None:
                     threading.Thread(target=self._prefetch_direct, args=(url,),
+                                     daemon=True).start()
+                with self._lock:
+                    in_cache = url in self._lyrics
+                if not in_cache:
+                    threading.Thread(target=self._prefetch_lyrics_worker, args=(t,),
                                      daemon=True).start()
 
     def _prefetch_direct(self, url: str) -> None:
@@ -913,6 +971,9 @@ class Daemon:
             "speed": self._h_speed,
             "device": self._h_device,
             "download": self._h_download,
+            "downloads": self._h_downloads,
+            "remove_download": self._h_remove_download,
+            "eq": self._h_eq,
             "seek": self._h_seek,
             "remove": self._h_remove,
             "clear": self._h_clear,
@@ -1198,23 +1259,29 @@ class Daemon:
                                      "mood": mood, "lang": lang, "artist": artist}}
 
     def _h_radio(self, arg: str) -> dict:
-        """Radio from a seed (artist / song / genre / URL)."""
+        """Radio from a seed (artist / song / genre / URL / mood preset)."""
         seed = arg.strip()
         if not seed:
-            return {"ok": False, "error": "radio needs a seed (artist, song, genre, or URL)"}
+            seed = "lofi"
+        resolved_query = resolve_radio_query(seed)
         ctx = self._session_ctx()
         limit = int(self.cfg.get("mix_count", 16))
         try:
-            tracks = build_radio_session(seed, self._engine_resolve, self._engine_radio,
+            tracks = build_radio_session(resolved_query, self._engine_resolve, self._engine_radio,
                                          self._engine_search, limit=limit,
                                          avoid=ctx["avoid"], prefs=ctx["prefs"])
-        except Exception as e:
-            return {"ok": False, "error": f"could not build a session: {e}"}
+        except Exception:
+            tracks = []
+        if not tracks:
+            try:
+                tracks = self._engine_search(resolved_query)
+            except Exception:
+                tracks = []
         if not tracks:
             return {"ok": False, "error": f"no results for {seed!r}"}
-        self._play_tracks(tracks, mood=None)
+        self._play_tracks(tracks, mood=seed)
         return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks),
-                                     "seed": seed}}
+                                     "seed": seed, "query": resolved_query}}
 
     def _h_similar(self, arg: str) -> dict:
         """Play tracks related to a song (or the current one if arg empty)."""
@@ -1688,31 +1755,73 @@ class Daemon:
                 pass  # takes effect on next spawn
             return {"ok": True, "data": {"device": arg}}
 
-    def _h_download(self, arg: str) -> dict:
-        if arg.strip() == "queue":  # download the whole current queue
+    def _h_download(self, arg: str = "") -> dict:
+        target_track = None
+        sarg = arg.strip()
+        if sarg == "queue":
             with self._lock:
                 tracks = list(self.q.tracks)
             if not tracks:
                 return {"ok": False, "error": "queue is empty"}
-            out_dir = self.cfg.get("download_dir") or os.path.expanduser("~/Downloads/tune")
-            os.makedirs(out_dir, exist_ok=True)
-            ytdl = shutil.which("yt-dlp") or os.path.expanduser("~/.local/bin/yt-dlp")
-            threading.Thread(target=_do_download_queue, args=(ytdl, tracks, out_dir),
-                             daemon=True).start()
-            return {"ok": True, "data": {"title": f"{len(tracks)} tracks",
-                                         "dir": out_dir, "count": len(tracks)}}
-        try:
-            tracks = self._resolve_all([arg])  # read-only; no _op_lock needed
-        except ResolveError as e:
-            return {"ok": False, "error": str(e)}
-        track = tracks[0]
-        out_dir = self.cfg.get("download_dir") or os.path.expanduser("~/Downloads/tune")
-        os.makedirs(out_dir, exist_ok=True)
-        base = re.sub(r"[^\w\- ]+", "_", track.title).strip()[:60] or track.url
-        ytdl = shutil.which("yt-dlp") or os.path.expanduser("~/.local/bin/yt-dlp")
-        threading.Thread(target=_do_download, args=(ytdl, track.url, out_dir, base),
-                         daemon=True).start()
-        return {"ok": True, "data": {"title": track.title, "dir": out_dir}}
+            for t in tracks:
+                download_track(t)
+            return {"ok": True, "data": {"title": f"{len(tracks)} tracks", "count": len(tracks), "dir": "downloads"}}
+        elif not sarg:
+            with self._lock:
+                target_track = self.q.current()
+            if not target_track:
+                return {"ok": False, "error": "nothing playing to download"}
+        else:
+            try:
+                tracks = self._resolve_all([sarg])
+                if tracks:
+                    target_track = tracks[0]
+            except Exception as e:
+                return {"ok": False, "error": f"download resolve failed: {e}"}
+
+        if not target_track:
+            return {"ok": False, "error": "track not found"}
+
+        download_track(target_track)
+        return {"ok": True, "data": {"title": target_track.title, "url": target_track.url, "dir": "downloads"}}
+
+    def _h_downloads(self, _arg: str = "") -> dict:
+        return {"ok": True, "data": {"downloads": get_downloads_index()}}
+
+    def _h_remove_download(self, arg: str = "") -> dict:
+        target_url = arg.strip()
+        if not target_url:
+            with self._lock:
+                cur = self.q.current()
+                if cur:
+                    target_url = cur.url
+        if not target_url:
+            return {"ok": False, "error": "no track url specified"}
+        removed = remove_download(target_url)
+        return {"ok": True, "data": {"url": target_url, "removed": removed}}
+
+    def _h_eq(self, arg: str = "") -> dict:
+        sarg = arg.strip().lower()
+        with self._lock:
+            if not sarg or sarg == "next":
+                preset = next_eq_preset(self._eq_preset)
+            elif sarg == "off":
+                preset = "flat"
+            elif sarg in EQ_PRESETS:
+                preset = sarg
+            else:
+                return {
+                    "ok": False,
+                    "error": f"unknown eq preset '{arg}'. Available: {', '.join(EQ_ORDER)}",
+                }
+            self._eq_preset = preset
+            self.cfg.set("equalizer_preset", preset)
+            if self.player:
+                try:
+                    self.player.set_property("af", format_mpv_eq(preset))
+                except Exception as e:
+                    log(f"failed setting eq af filter: {e}")
+            return {"ok": True, "data": {"preset": preset, "af": format_mpv_eq(preset)}}
 
     def _h_history(self, _arg: str = "") -> dict:
         with self._lock:
@@ -1742,27 +1851,85 @@ class Daemon:
     def _h_lyrics(self, arg: str = "") -> dict:
         with self._lock:
             now = self.q.current()
-        url = arg or (now.url if now else "")
+            target_track = None
+            if arg:
+                for t in self.q.tracks:
+                    if t.url == arg:
+                        target_track = t
+                        break
+            if not target_track:
+                target_track = now
+        url = arg or (target_track.url if target_track else "")
         if not url:
             return {"ok": False, "error": "no track playing"}
-        cached = self._lyrics.get(url)
+
+        # 1. Memory cache hit
+        with self._lock:
+            cached = self._lyrics.get(url)
+            in_flight = self._lyrics_in_flight.get(url)
+
         if cached is not None:
+            if not cached:
+                return {"ok": True, "data": {"lines": [], "note": "no lyrics found for this track", "cached": True}}
             return {"ok": True, "data": {"lines": cached, "cached": True}}
+
+        # 2. If an in-flight fetch is ALREADY running (e.g. background prefetch), wait for it
+        if in_flight is not None:
+            in_flight.wait(timeout=6.0)
+            with self._lock:
+                cached = self._lyrics.get(url)
+            if cached is not None:
+                if not cached:
+                    return {"ok": True, "data": {"lines": [], "note": "no lyrics found for this track", "cached": True}}
+                return {"ok": True, "data": {"lines": cached, "cached": True}}
+            return {"ok": True, "data": {"lines": [], "note": "fetching lyrics timed out", "cached": False}}
+
+        # 3. Claim single-flight slot atomically
+        ev = threading.Event()
+        with self._lock:
+            cached = self._lyrics.get(url)
+            if cached is not None:
+                if not cached:
+                    return {"ok": True, "data": {"lines": [], "note": "no lyrics found for this track", "cached": True}}
+                return {"ok": True, "data": {"lines": cached, "cached": True}}
+            in_flight = self._lyrics_in_flight.get(url)
+            if in_flight is not None:
+                wait_ev = in_flight
+            else:
+                self._lyrics_in_flight[url] = ev
+                wait_ev = None
+
+        if wait_ev is not None:
+            wait_ev.wait(timeout=6.0)
+            with self._lock:
+                cached = self._lyrics.get(url)
+            if cached is not None:
+                if not cached:
+                    return {"ok": True, "data": {"lines": [], "note": "no lyrics found for this track", "cached": True}}
+                return {"ok": True, "data": {"lines": cached, "cached": True}}
+            return {"ok": True, "data": {"lines": [], "note": "fetching lyrics timed out", "cached": False}}
+
         try:
-            lines = fetch_lyrics(url)
+            lines = fetch_lyrics(
+                url=url,
+                title=getattr(target_track, "title", "") if target_track else "",
+                artist=getattr(target_track, "channel", "") or "" if target_track else "",
+                duration=getattr(target_track, "duration", None) if target_track else None,
+                query=getattr(target_track, "query", "") or "" if target_track else "",
+            )
+            with self._lock:
+                self._lyrics[url] = lines or []
+                if len(self._lyrics) > self._cache_max:
+                    self._lyrics.pop(next(iter(self._lyrics)))
         except Exception as e:
             return {"ok": False, "error": f"lyrics unavailable: {e}"}
-        if not lines and now:  # YouTube had no subs -> try LRCLIB by title/artist
-            try:
-                lines = fetch_lrclib(now.title, now.channel or "", now.duration)
-            except Exception:
-                lines = []
+        finally:
+            with self._lock:
+                self._lyrics_in_flight.pop(url, None)
+            ev.set()
+
         if not lines:
-            return {"ok": True, "data": {"lines": [], "note": "no subtitles available"}}
-        with self._lock:
-            self._lyrics[url] = lines
-            if len(self._lyrics) > self._cache_max:
-                self._lyrics.pop(next(iter(self._lyrics)))  # drop oldest
+            return {"ok": True, "data": {"lines": [], "note": "no lyrics found for this track", "cached": False}}
         return {"ok": True, "data": {"lines": lines, "cached": False}}
 
     def _h_art(self, _arg: str = "") -> dict:
@@ -2327,6 +2494,8 @@ class Daemon:
                     "mood_artist": self._session_artist,
                     "smart_queue": bool(self.cfg.get("smart_queue")),
                     "fav": self._is_fav(now.url if now else None),
+                    "eq": getattr(self, "_eq_preset", "flat"),
+                    "downloaded": is_downloaded(now.url) if now else False,
                     "error": self._error,
                 },
             }

@@ -23,16 +23,41 @@ import tty
 
 from .client import send_cmd
 
-_STATE_MARK = {"playing": "▶", "paused": "⏸", "loading": "…", "idle": "·"}
+_STATE_MARK = {"playing": "⚔️", "paused": "🗡️", "loading": "⚡", "idle": "👺"}
+_STATE_KAOMOJI = {
+    "playing": "TOTAL FOCUS",
+    "paused": "SHEATHED",
+    "loading": "TRAINING",
+    "idle": "STANDBY",
+}
+_BREATHING_TECHNIQUES = [
+    "WATER BREATHING I",
+    "SUN BREATHING XIII",
+    "THUNDER BREATHING",
+    "FLAME BREATHING I",
+    "BEAST BREATHING I",
+]
+
+
 _REPEAT_ORDER = ["off", "all", "one"]
 _SEARCH_LIMIT = 80
-_AMP_BLOCKS = "▁▂▃▄▅▆▇█"
+_AMP_BLOCKS   = "▁▂▃▄▅▆▇█"
+# ── Visualizer layout constants ──────────────────────────────────────────────
+_VIZ_ROWS  = 5   # number of rows the spectrum occupies (rows 4 … 4+VIZ_ROWS-1)
+_VIZ_ROW   = 4   # first row of the visualizer
+_SEP_ROW   = _VIZ_ROW + _VIZ_ROWS      # QUEUE separator row  (= 9)
+_QUEUE_ROW = _SEP_ROW + 1              # queue list starts here (= 10)
 # Palette per theme: (header, current-track, accent, error, title, list).
 # `list` colors body text (queue / search / lyrics / help). Error stays red in
 # most themes because red is a semantic color.
 _THEMES = {
-    "default":     (curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_WHITE),
-    "mono":        (curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE),
+    "default":        (curses.COLOR_GREEN, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_CYAN),
+    "tanjiro":       (curses.COLOR_GREEN, curses.COLOR_CYAN, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_CYAN),
+    "rengoku":       (curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_WHITE),
+    "zenitsu":       (curses.COLOR_YELLOW, curses.COLOR_WHITE, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_WHITE),
+    "giyuu":         (curses.COLOR_BLUE, curses.COLOR_CYAN, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_BLUE, curses.COLOR_WHITE),
+    "akaza":         (curses.COLOR_MAGENTA, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_MAGENTA, curses.COLOR_WHITE),
+    "mono":          (curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE, curses.COLOR_WHITE),
     # A–Z
     "amber":       (curses.COLOR_YELLOW, curses.COLOR_GREEN, curses.COLOR_RED, curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_YELLOW),
     "blue":        (curses.COLOR_BLUE, curses.COLOR_CYAN, curses.COLOR_WHITE, curses.COLOR_RED, curses.COLOR_WHITE, curses.COLOR_WHITE),
@@ -85,18 +110,22 @@ def _apply_theme(name: str) -> None:
     curses.init_pair(4, error, -1)    # errors / unavailable
     curses.init_pair(5, title, -1)    # now-playing title
     curses.init_pair(6, list, -1)     # body text (queue / search / lyrics / help)
-_NOW_HELP = ("space pause · n/p next/prev · ↑/↓ select · d remove · enter jump · "
-             "+/- vol · [ ] speed · ←/→ seek · l lyrics · s shuffle · r repeat · "
+_NOW_HELP = ("space pause · e eq · D download · M radio · tab layout · n/p next/prev · v viz · ↑/↓ select · d remove · enter jump · "
+             "+/- vol · [ ] speed · ←/→ seek · ,/. sync · l lyrics · s shuffle · r repeat · "
              "t theme · / search · q quit")
 _SEARCH_HELP = "enter play · tab add to queue · ↑/↓ move · backspace edit · esc back"
+_VIZ_MODES = ("spectrum", "stereo", "wave", "bars")
 
 
 def _visualizer() -> str:
     try:
         from .config import Config
-        return str(Config().get("visualizer", "eq")).strip()
+        v = str(Config().get("visualizer", "spectrum")).strip().lower()
+        if v == "eq":
+            return "spectrum"
+        return v if v in _VIZ_MODES else "spectrum"
     except Exception:
-        return "eq"
+        return "spectrum"
 
 
 def _fmt_time(sec: float | None) -> str:
@@ -135,11 +164,16 @@ def _loop(stdscr) -> None:
         while True:
             try:
                 resp = send_cmd("status")
-                status = resp["data"] if resp.get("ok") else {
-                    "state": "idle", "error": resp.get("error")}
+                if resp.get("ok"):
+                    data = resp["data"]
+                    data["_mono_t"] = time.monotonic()
+                    data["_pos_base"] = float(data.get("position", 0.0) or 0.0)
+                    status = data
+                else:
+                    status = {"state": "idle", "error": resp.get("error")}
             except Exception:
                 status = {"state": "idle", "error": "daemon unreachable"}
-            time.sleep(0.2)
+            time.sleep(0.08 if status.get("state") == "playing" else 0.25)
 
     threading.Thread(target=_poller, daemon=True).start()
 
@@ -156,9 +190,11 @@ def _loop(stdscr) -> None:
     theme_saved = _load_theme()
     theme_sel = theme_names.index(theme_saved) if theme_saved in theme_names else 0
 
-    # UI state: queue selection, lyrics pane, amplifier clock
-    ui = {"qsel": 0, "qsel_follow": True,
-          "lyr_on": False, "lyr_lines": [], "lyr_loading": False, "lyr_note": ""}
+    # UI state: queue selection, lyrics pane, layout, amplifier clock
+    ui = {"qsel": 0, "qsel_follow": True, "layout": "studio",
+          "lyr_on": False, "lyr_lines": [], "lyr_loading": False, "lyr_note": "",
+          "lyr_url": "", "lyr_track_id": "", "lyr_fetched_track": "",
+          "lyr_scroll": 0, "lyr_offset": 0.0}
     amp_t = 0.0
     last_tick = time.monotonic()
 
@@ -172,6 +208,28 @@ def _loop(stdscr) -> None:
         elif st == "loading":
             amp_t += dt * 0.4  # slow crawl while buffering
         # paused / idle: freeze the amplifier
+
+        # Real-time lyrics tracking: as soon as track changes, update lyrics instantly
+        cur_url = status.get("url") or ""
+        cur_track_id = cur_url
+        if cur_track_id and status.get("state") != "loading":
+            if cur_track_id != ui.get("lyr_fetched_track"):
+                ui["lyr_fetched_track"] = cur_track_id
+                ui["lyr_track_id"] = cur_track_id
+                if ui.get("layout") in ("studio", "lyrics") or ui.get("lyr_on"):
+                    _update_lyrics(ui, status)
+                else:
+                    ui["lyr_url"] = cur_url
+                    ui["lyr_lines"] = []
+                    ui["lyr_note"] = ""
+                    ui["lyr_loading"] = False
+                    ui["lyr_scroll"] = 0
+
+        # Safety guard: clear loading state if network or daemon worker takes > 7.0s
+        if ui.get("lyr_loading") and (now_t - ui.get("lyr_loading_t", now_t)) > 7.0:
+            ui["lyr_loading"] = False
+            if not ui.get("lyr_lines") and not ui.get("lyr_note"):
+                ui["lyr_note"] = "no lyrics found for this track"
 
         # queue selection follows the current track until the user moves it
         if (mode in ("now", "filter") and ui["qsel_follow"] and not qfilter
@@ -213,7 +271,7 @@ def _loop(stdscr) -> None:
             _stop_on_quit()
             break
 
-        curses.napms(100)
+        curses.napms(35)
 
 
 # --- key handling -----------------------------------------------------------
@@ -252,15 +310,56 @@ def _stop_on_quit() -> None:
         pass  # daemon already gone / unreachable; nothing to stop
 
 
+def _cycle_viz_mode(ui: dict) -> None:
+    cur_m = ui.get("viz_mode") or _visualizer()
+    if cur_m not in _VIZ_MODES:
+        cur_m = "spectrum"
+    nxt_m = _VIZ_MODES[(_VIZ_MODES.index(cur_m) + 1) % len(_VIZ_MODES)]
+    ui["viz_mode"] = nxt_m
+    ui["viz_toast"] = f"visualizer: {nxt_m.upper()}"
+    ui["viz_toast_t"] = time.monotonic()
+    # Reset physics caches so the new mode starts cleanly
+    ui.pop("viz_bands", None)
+    ui.pop("viz_peaks", None)
+    ui.pop("viz_holds", None)
+    _bg_send("config", f"visualizer {nxt_m}")
+
+
 def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> str:
     if ch == -1:
         return mode
-    if ui["lyr_on"]:  # lyrics view — transport works, l/esc exits
+
+    # Tab key: cycle layouts (studio -> queue -> lyrics)
+    if ch == 9:
+        cur_l = ui.get("layout", "studio")
+        order = ["studio", "queue", "lyrics"]
+        nxt_l = order[(order.index(cur_l) + 1) % len(order)] if cur_l in order else "studio"
+        ui["layout"] = nxt_l
+        ui["lyr_on"] = (nxt_l == "lyrics")
+        ui["viz_toast"] = f"LAYOUT: {nxt_l.upper()}"
+        ui["viz_toast_t"] = time.monotonic()
+        if nxt_l in ("studio", "lyrics"):
+            cur_url = status.get("url") or ""
+            cur_track_id = cur_url or status.get("title") or ""
+            if (not ui.get("lyr_lines") and not ui.get("lyr_loading")) or cur_track_id != ui.get("lyr_fetched_track"):
+                _update_lyrics(ui, status)
+        return mode
+
+    # Dedicated full-screen lyrics mode
+    if ui.get("layout") == "lyrics" or (ui.get("lyr_on") and ui.get("layout") != "studio"):
         if ch in (ord("l"), 27):
+            ui["layout"] = "studio"
             ui["lyr_on"] = False
+        elif ch == ord("r"):
+            ui["lyr_fetched_track"] = ""
+            _update_lyrics(ui, status)
+        elif ch == ord("q"):
+            mode = "quit"
+        elif ch == ord("v"):
+            _cycle_viz_mode(ui)
         elif ch == ord(" "):
             _bg_send("toggle")
-        elif ch in (ord("n"), ord("k")):
+        elif ch in (ord("n"),):
             _bg_send("next")
         elif ch == ord("p"):
             _bg_send("prev")
@@ -268,12 +367,59 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
             _bg_send("volume", "+5")
         elif ch == ord("-"):
             _bg_send("volume", "-5")
+        elif ch == curses.KEY_LEFT:
+            _bg_send("seek", "-5")
+        elif ch == curses.KEY_RIGHT:
+            _bg_send("seek", "+5")
+        elif ch in (ord(","), ord("<")):
+            ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) - 0.25, 2)
+            ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+            ui["viz_toast_t"] = time.monotonic()
+        elif ch in (ord("."), ord(">")):
+            ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) + 0.25, 2)
+            ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+            ui["viz_toast_t"] = time.monotonic()
+        elif ch == ord("o"):
+            ui["lyr_offset"] = 0.0
+            ui["viz_toast"] = "LYRICS SYNC: RESET (0.00s)"
+            ui["viz_toast_t"] = time.monotonic()
+        elif ch in (curses.KEY_UP, ord("k")):
+            ui["lyr_scroll"] = max(0, ui.get("lyr_scroll", 0) - 1)
+        elif ch in (curses.KEY_DOWN, ord("j")):
+            ui["lyr_scroll"] = ui.get("lyr_scroll", 0) + 1
         return mode
+
     vis = _visible_queue(status, qfilter)
     if ch in (ord("q"), 27):
         mode = "quit"  # sentinel: quit the TUI and stop playback
     elif ch == ord("l"):
-        _toggle_lyrics(ui)
+        if ui.get("layout") == "studio":
+            ui["layout"] = "lyrics"
+            ui["lyr_on"] = True
+        else:
+            ui["layout"] = "studio"
+            ui["lyr_on"] = False
+        cur_url = status.get("url") or ""
+        cur_track_id = cur_url or status.get("title") or ""
+        if (not ui.get("lyr_lines") and not ui.get("lyr_loading")) or cur_track_id != ui.get("lyr_fetched_track"):
+            _update_lyrics(ui, status)
+    elif ch == ord("r"):
+        ui["lyr_fetched_track"] = ""
+        _update_lyrics(ui, status)
+    elif ch in (ord(","), ord("<")):
+        ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) - 0.25, 2)
+        ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch in (ord("."), ord(">")):
+        ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) + 0.25, 2)
+        ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("o"):
+        ui["lyr_offset"] = 0.0
+        ui["viz_toast"] = "LYRICS SYNC: RESET (0.00s)"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("v"):
+        _cycle_viz_mode(ui)
     elif ch == ord("f"):
         mode = "filter"
     elif ch == curses.KEY_UP:
@@ -285,7 +431,19 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     elif ch in (10, 13, curses.KEY_ENTER) and vis:
         _bg_send("playindex", str(vis[min(ui["qsel"], len(vis) - 1)][0] + 1))
         ui["qsel_follow"] = False
-    elif ch == ord("d") and vis:
+    elif ch in (ord("e"), ord("E")):
+        _bg_send("eq", "next")
+        ui["viz_toast"] = "✦ EQUALIZER PRESET CHANGED ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("D"):
+        _bg_send("download")
+        ui["viz_toast"] = "✦ DOWNLOADING AUDIO... ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("M"):
+        _bg_send("radio", "lofi")
+        ui["viz_toast"] = "✦ SMART RADIO: LOFI MIX ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif (ch == ord("d") or ch == ord("x") or ch == curses.KEY_DC) and vis:
         _bg_send("remove", str(vis[min(ui["qsel"], len(vis) - 1)][0] + 1))
         ui["qsel"] = max(0, min(ui["qsel"], max(0, len(vis) - 2)))
         ui["qsel_follow"] = False
@@ -306,9 +464,9 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     elif ch in (ord("]"), ord("}")):
         _bg_send("speed", "1.1")
     elif ch == curses.KEY_RIGHT:
-        _bg_send("seek", "+10")
+        _bg_send("seek", "+5")
     elif ch == curses.KEY_LEFT:
-        _bg_send("seek", "-10")
+        _bg_send("seek", "-5")
     elif ch == ord("s"):
         _bg_send("shuffle")
     elif ch == ord("r"):
@@ -317,6 +475,10 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         ui["art"] = True
     elif ch in map(ord, "012345"):
         _bg_send("rate", str(ch - ord("0")))
+    elif ch == curses.KEY_PPAGE:
+        ui["lyr_scroll"] = max(0, ui.get("lyr_scroll", 0) - 4)
+    elif ch == curses.KEY_NPAGE:
+        ui["lyr_scroll"] = ui.get("lyr_scroll", 0) + 4
     elif ch == ord("t"):
         mode = "theme"
     elif ch == ord(":"):
@@ -400,40 +562,104 @@ def _filter_key(ch, mode, qfilter):
     return mode, qfilter
 
 
-def _toggle_lyrics(ui: dict) -> None:
+def _update_lyrics(ui: dict, status: dict) -> None:
+    """Fetch lyrics for the active track asynchronously with zero UI blocking."""
+    cur_url = status.get("url") or ""
+    if not cur_url:
+        ui["lyr_url"] = ""
+        ui["lyr_lines"] = []
+        ui["lyr_note"] = "no track playing"
+        ui["lyr_loading"] = False
+        return
+
+    # If already loading for this exact URL, avoid redundant duplicate workers
+    if ui.get("lyr_loading") and ui.get("lyr_url") == cur_url:
+        return
+
+    cur_track_id = cur_url or status.get("title") or ""
+    ui["lyr_url"] = cur_url
+    ui["lyr_lines"] = []
+    ui["lyr_loading"] = True
+    ui["lyr_loading_t"] = time.monotonic()
+    ui["lyr_note"] = ""
+    ui["lyr_scroll"] = 0
+    ui["lyr_fetched_track"] = cur_track_id
+
+    target_url = cur_url
+
+    def worker() -> None:
+        try:
+            resp = send_cmd("lyrics", target_url)
+            if ui.get("lyr_url") != target_url:
+                return  # track changed while fetching; discard stale result
+            if resp.get("ok"):
+                data = resp.get("data") or {}
+                lines = data.get("lines", [])
+                ui["lyr_lines"] = lines
+                ui["lyr_note"] = data.get("note") or ("no lyrics found for this track" if not lines else "")
+            else:
+                ui["lyr_note"] = resp.get("error", "lyrics unavailable")
+        except Exception as e:
+            if ui.get("lyr_url") == target_url:
+                ui["lyr_note"] = str(e)
+        finally:
+            if ui.get("lyr_url") == target_url:
+                ui["lyr_loading"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _toggle_lyrics(ui: dict, status: dict) -> None:
     if ui["lyr_on"]:
         ui["lyr_on"] = False
         return
     ui["lyr_on"] = True
-    if not ui["lyr_lines"] and not ui["lyr_loading"]:
-        ui["lyr_loading"] = True
-
-        def worker() -> None:
-            try:
-                resp = send_cmd("lyrics")
-                if resp.get("ok"):
-                    ui["lyr_lines"] = (resp.get("data") or {}).get("lines", [])
-                    ui["lyr_note"] = (resp.get("data") or {}).get("note", "")
-                else:
-                    ui["lyr_note"] = resp.get("error", "lyrics unavailable")
-            except Exception as e:
-                ui["lyr_note"] = str(e)
-            ui["lyr_loading"] = False
-
-        threading.Thread(target=worker, daemon=True).start()
+    cur_url = status.get("url") or ""
+    cur_track_id = cur_url or status.get("title") or ""
+    if (not ui.get("lyr_lines") and not ui.get("lyr_loading")) or cur_track_id != ui.get("lyr_fetched_track"):
+        _update_lyrics(ui, status)
 
 
-def _cur_lyr_line(status: dict, ui: dict) -> int:
-    pos = status.get("position", 0)
-    lines = ui["lyr_lines"]
+def _get_live_position(status: dict, ui: dict) -> float:
+    """Return high-precision playback position with monotonic clock extrapolation and sync offset."""
+    base = float(status.get("_pos_base", status.get("position", 0.0)) or 0.0)
+    offset = float(ui.get("lyr_offset", 0.0) or 0.0)
+    if status.get("state") == "playing":
+        t0 = status.get("_mono_t")
+        if t0 is not None:
+            dt = max(0.0, time.monotonic() - t0)
+            speed = float(status.get("speed", 1.0) or 1.0)
+            return max(0.0, base + dt * speed + offset)
+    return max(0.0, base + offset)
+
+
+def _cur_lyr_line(status: dict, ui: dict, pos: float | None = None) -> int:
+    if pos is None:
+        pos = _get_live_position(status, ui)
+    lines = ui.get("lyr_lines", [])
+    if not lines:
+        return 0
+    # Before first vocal line: intro state (-1)
+    first_start = lines[0].get("start")
+    if first_start is not None and pos < first_start:
+        return -1
+
+    # Exact interval match
     for i, ln in enumerate(lines):
-        if ln.get("start", 0) <= pos <= ln.get("end", pos):
+        start = ln.get("start")
+        end = ln.get("end")
+        if start is not None and end is not None and start <= pos <= end:
             return i
-    # fall back to the nearest line at/before the position
+    # Nearest line before current position
+    best = 0
     for i, ln in enumerate(lines):
-        if ln.get("end", 0) <= pos:
-            return i
-    return max(0, len(lines) - 1)
+        start = ln.get("start")
+        if start is not None:
+            if start <= pos:
+                best = i
+            else:
+                break
+    return best
 
 
 def _show_art(stdscr) -> None:
@@ -567,244 +793,805 @@ def _cycle_repeat(status: dict) -> None:
 
 # --- drawing ----------------------------------------------------------------
 
+def _viz_height(h: int, mode: str) -> int:
+    if mode == "search":
+        return 0
+    if mode == "theme":
+        return 2
+    if h <= 17:
+        return 2
+    elif h <= 23:
+        return 3
+    elif h <= 29:
+        return 4
+    else:
+        return 5
+
+
 def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
           amp_t: float, ui: dict, cmdq: str = "",
           theme_sel: int = 0, theme_names: list | None = None,
           qfilter: str = "", sbucket: dict | None = None) -> None:
-    _draw_header(stdscr, status, w)
-    _draw_amp(stdscr, status, amp_t, w)
-    if status.get("error"):
-        try:
-            stdscr.addstr(5, 0, ("[!] " + status["error"])[: w - 1],
-                          curses.color_pair(4) | curses.A_BOLD)
-        except curses.error:
-            pass
-    if mode == "search":
-        _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg, sbucket)
-    elif mode == "cmd":
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
-        try:
-            stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[: w - 1],
-                          curses.A_BOLD | curses.color_pair(3))
-        except curses.error:
-            pass
-    elif mode == "filter":
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
-        try:
-            stdscr.addstr(5, 0, ("filter: " + qfilter + "_")[: w - 1],
-                          curses.A_BOLD | curses.color_pair(3))
-        except curses.error:
-            pass
-        try:
-            stdscr.addstr(h - 1, 0, "type to filter the queue · enter keep · esc clear"[: w - 1],
-                          curses.color_pair(6) | curses.A_DIM)
-        except curses.error:
-            pass
-    elif mode == "theme":
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
-        _draw_theme_picker(stdscr, h, w, theme_sel, theme_names or list(_THEMES))
-        try:
-            stdscr.addstr(h - 1, 0, "↑/↓ browse (live) · enter apply · esc cancel"[: w - 1],
-                          curses.color_pair(6) | curses.A_DIM)
-        except curses.error:
-            pass
-    elif ui["lyr_on"]:
-        _draw_lyrics(stdscr, status, ui, h, w)
-        try:
-            stdscr.addstr(h - 1, 0, ("space pause · n/p next/prev · +/- vol · "
-                                     "l/esc back · q quit")[: w - 1],
-                          curses.color_pair(6) | curses.A_DIM)
-        except curses.error:
-            pass
+    _draw_header(stdscr, status, w, amp_t)
+    viz_h = _viz_height(h, mode)
+    if viz_h > 0:
+        _draw_amp(stdscr, status, amp_t, w, ui, viz_top=4, viz_h=viz_h)
+        sep_row = 4 + viz_h
+        content_top = sep_row + 1
     else:
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter)
-        try:
-            stdscr.addstr(h - 1, 0, _NOW_HELP[: w - 1],
-                          curses.color_pair(6) | curses.A_DIM)
-        except curses.error:
-            pass
+        sep_row = 4
+        content_top = 4
 
+    # Determine whether Dual-Pane Studio layout is active
+    layout = ui.get("layout", "studio")
+    is_split = (mode in ("now", "filter", "cmd") and w >= 80 and layout == "studio")
+    left_w = int(w * 0.46) if is_split else w
+    right_w = (w - left_w - 1) if is_split else 0
 
-def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int) -> None:
-    top = 8
-    window = max(0, (h - 3) - top)
-    if window <= 0:
-        return
-    if ui["lyr_loading"]:
-        try:
-            stdscr.addstr(top, 0, "loading lyrics…", curses.color_pair(6) | curses.A_DIM)
-        except curses.error:
-            pass
-        return
-    if not ui["lyr_lines"]:
-        try:
-            stdscr.addstr(top, 0, (ui["lyr_note"] or "no lyrics available")[: w - 1],
-                          curses.color_pair(4))
-        except curses.error:
-            pass
-        return
-    pos = status.get("position", 0)
-    cur = _cur_lyr_line(status, ui)
-    start = max(0, cur - window // 2)
-    for i in range(start, min(len(ui["lyr_lines"]), start + window)):
-        row = top + (i - start)
-        text = ui["lyr_lines"][i]["text"][: w - 1]
-        if i == cur:  # karaoke highlight: elapsed part is reversed
-            ln = ui["lyr_lines"][i]
-            dur = max(0.001, ln.get("end", ln.get("start", 0) + 1) - ln.get("start", 0))
-            n = int((pos - ln.get("start", 0)) / dur * len(text))
-            n = max(0, min(len(text), n))
+    # Section label separator
+    if sep_row < h - 1 and mode != "search":
+        err = status.get("error")
+        if err:
             try:
-                stdscr.addstr(row, 0, text[:n], curses.color_pair(5) | curses.A_REVERSE)
-                stdscr.addstr(row, n, text[n:], curses.color_pair(5) | curses.A_BOLD)
+                stdscr.addstr(sep_row, 0, (f" ✖ {err}")[:w - 1], curses.color_pair(4) | curses.A_BOLD)
+            except curses.error:
+                pass
+        elif is_split:
+            cur_idx = status.get("current_index", -1)
+            q_len = status.get("queue_len", 0)
+            q_pos = f"{cur_idx + 1 if cur_idx >= 0 else 0}/{q_len}"
+            toast = ui.get("viz_toast")
+            toast_t = ui.get("viz_toast_t", 0.0)
+            if toast and (time.monotonic() - toast_t) < 1.8:
+                left_tag = f" ✦ {toast.upper()} ✦ "
+            elif qfilter:
+                left_tag = f" ♯ QUEUE ({q_pos}) · filter: {qfilter} "
+            else:
+                cur_m = ui.get("viz_mode") or _visualizer()
+                left_tag = f" ♯ QUEUE ({q_pos}) · {cur_m.upper()} "
+
+            left_fill = max(0, left_w - len(left_tag))
+            left_bar = (left_tag + "─" * left_fill)[:left_w]
+
+            lines = ui.get("lyr_lines", [])
+            is_synced = any(ln.get("synced", True) and ln.get("start") is not None for ln in lines)
+            off = ui.get("lyr_offset", 0.0)
+            off_str = f" [{off:+.2f}s]" if abs(off) > 0.01 else ""
+            if ui.get("lyr_loading"):
+                right_tag = " [● LOADING LYRICS…] "
+            elif is_synced:
+                right_tag = f" [● LIVE SYNCED KARAOKE{off_str}] "
+            elif lines:
+                right_tag = " [● LYRICS] "
+            else:
+                right_tag = " [LYRICS] "
+
+            right_fill = max(0, right_w - len(right_tag))
+            right_bar = (right_tag + "─" * right_fill)[:right_w]
+
+            full_sep = (left_bar + "┬" + right_bar)[:w - 1]
+            try:
+                stdscr.addstr(sep_row, 0, full_sep, curses.color_pair(1))
             except curses.error:
                 pass
         else:
-            attr = curses.color_pair(6)
-            if abs(i - cur) > 2:
-                attr |= curses.A_DIM
+            toast = ui.get("viz_toast")
+            toast_t = ui.get("viz_toast_t", 0.0)
+            if toast and (time.monotonic() - toast_t) < 1.8:
+                label = f"✦ {toast.upper()} ✦"
+            elif qfilter:
+                label = f"QUEUE  ·  filter: {qfilter}"
+            elif layout == "lyrics" or ui.get("lyr_on"):
+                lines = ui.get("lyr_lines", [])
+                is_synced = any(ln.get("synced", True) and ln.get("start") is not None for ln in lines)
+                off = ui.get("lyr_offset", 0.0)
+                off_str = f" [{off:+.2f}s]" if abs(off) > 0.01 else ""
+                label = f"LIVE SYNCED KARAOKE{off_str}" if is_synced else "LYRICS"
+            else:
+                cur_m = ui.get("viz_mode") or _visualizer()
+                label = f"QUEUE  ·  {cur_m.upper()}"
+            sep = f" {label} " + "─" * max(0, w - len(label) - 3)
             try:
-                stdscr.addstr(row, 0, text, attr)
+                stdscr.addstr(sep_row, 0, sep[:w - 1], curses.color_pair(1))
+            except curses.error:
+                pass
+
+    if mode == "search":
+        _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg, sbucket, top=content_top)
+    elif mode == "theme":
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top)
+        _draw_theme_picker(stdscr, h, w, theme_sel, theme_names or list(_THEMES), top=content_top)
+        try:
+            stdscr.addstr(h - 1, 0, "↑/↓ browse (live) · enter apply · esc cancel"[:w - 1],
+                          curses.color_pair(6) | curses.A_DIM)
+        except curses.error:
+            pass
+    elif is_split:
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=left_w)
+        for r in range(content_top, max(content_top + 1, h - 1)):
+            try:
+                stdscr.addstr(r, left_w, "│", curses.color_pair(1))
+            except curses.error:
+                pass
+        _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=left_w + 1, max_w=right_w)
+        if mode == "cmd":
+            try:
+                stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[:w - 1],
+                              curses.A_BOLD | curses.color_pair(3))
+            except curses.error:
+                pass
+        elif mode == "filter":
+            try:
+                stdscr.addstr(h - 1, 0, "type to filter · enter keep · esc clear"[:w - 1],
+                              curses.color_pair(6) | curses.A_DIM)
+            except curses.error:
+                pass
+        else:
+            try:
+                stdscr.addstr(h - 1, 0, _NOW_HELP[:w - 1],
+                              curses.color_pair(6) | curses.A_DIM)
+            except curses.error:
+                pass
+    elif layout == "lyrics" or (ui.get("lyr_on") and layout != "studio"):
+        _draw_lyrics(stdscr, status, ui, h, w, top=content_top)
+        try:
+            stdscr.addstr(h - 1, 0, ("space pause · tab layout · n/p next/prev · v viz · +/- vol · "
+                                     "l/esc back · q quit")[:w - 1],
+                          curses.color_pair(6) | curses.A_DIM)
+        except curses.error:
+            pass
+    else:
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top)
+        if mode == "cmd":
+            try:
+                stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[:w - 1],
+                              curses.A_BOLD | curses.color_pair(3))
+            except curses.error:
+                pass
+        elif mode == "filter":
+            try:
+                stdscr.addstr(h - 1, 0, "type to filter · enter keep · esc clear"[:w - 1],
+                              curses.color_pair(6) | curses.A_DIM)
+            except curses.error:
+                pass
+        else:
+            try:
+                stdscr.addstr(h - 1, 0, _NOW_HELP[:w - 1],
+                              curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
 
 
-def _draw_amp(stdscr, status: dict, amp_t: float, w: int) -> None:
-    """Equalizer or spectrum bars. Bounces while playing, crawls while loading."""
-    mode = _visualizer()
-    state = status.get("state", "idle")
-    vol = status.get("volume", 80) or 80
-    amp = min(1.0, 0.35 + vol / 160.0)
-    if state == "idle":
-        line = " " * w
-    elif mode == "spectrum":
-        # 16-band pseudo-spectrum: each bar has a unique speed and phase
-        N = min(16, max(4, w // 4))
-        bar_w = max(1, (w - N + 1) // N)
-        bars = []
-        for i in range(N):
-            v = (math.sin(amp_t * (2.2 + i * 0.47) + i * 2.1) + 1) / 2.0
-            if state == "loading":
-                v = v * 0.35 + 0.2
-            h = int(round(v * amp * 7.0))
-            cell = _AMP_BLOCKS[min(7, h)] if h > 0 else " "
-            bars.append(cell * bar_w)
-        line = "".join(bars)[: w]
+def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
+                 left: int = 0, max_w: int | None = None) -> None:
+    """Karaoke-style lyrics pane with zero-latency audio clock interpolation,
+    vocal cadence modeling, intro countdown, and live sync offset."""
+    window = max(0, (h - 3) - top)
+    if window <= 0:
+        return
+    avail_w = max(1, min(max_w if max_w is not None else w, w - left - 1))
+    if ui.get("lyr_loading"):
+        try:
+            stdscr.addstr(top, left, "  loading lyrics…"[:avail_w], curses.color_pair(6) | curses.A_DIM)
+        except curses.error:
+            pass
+        return
+    lines = ui.get("lyr_lines", [])
+    if not lines:
+        note = ui.get("lyr_note") or "no lyrics available"
+        try:
+            stdscr.addstr(top, left, ("  " + note)[:avail_w], curses.color_pair(4))
+        except curses.error:
+            pass
+        return
+
+    is_synced = any(ln.get("synced", True) and ln.get("start") is not None for ln in lines)
+    pos = _get_live_position(status, ui)
+
+    if is_synced:
+        cur = _cur_lyr_line(status, ui, pos=pos)
+
+        # ── INTRO STATE (playback before first vocal line) ──
+        if cur == -1:
+            first_s = lines[0].get("start", 0.0)
+            rem = max(0.0, first_s - pos)
+            pulse_idx = int((time.monotonic() * 2.5) % 3)
+            dots = "● " * (pulse_idx + 1) + "○ " * (2 - pulse_idx)
+            off = ui.get("lyr_offset", 0.0)
+            off_tag = f"  [{off:+.2f}s]" if abs(off) > 0.01 else ""
+            intro_msg = f"  ♫ [INTRO]  vocals in {int(round(rem))}s  {dots.strip()}{off_tag}"
+            try:
+                stdscr.addstr(top, left, intro_msg[:avail_w], curses.color_pair(5) | curses.A_BOLD)
+            except curses.error:
+                pass
+            for i in range(0, min(len(lines), window - 1)):
+                row = top + 1 + i
+                text = ("  " + lines[i]["text"])[:avail_w]
+                attr = curses.color_pair(6)
+                if i > 2:
+                    attr |= curses.A_DIM
+                try:
+                    stdscr.addstr(row, left, text, attr)
+                except curses.error:
+                    pass
+            return
+
+        # ── ACTIVE PLAYBACK & KARAOKE SWEEP ──
+        start = max(0, cur - window // 2)
+        for i in range(start, min(len(lines), start + window)):
+            row = top + (i - start)
+            text = ("  " + lines[i]["text"])[:avail_w]
+            ln = lines[i]
+            if i == cur:
+                start_t = ln.get("start", 0.0)
+                end_t = ln.get("end", start_t + 1.0)
+                next_t = ln.get("next_start", end_t)
+                dur = max(0.001, end_t - start_t)
+
+                if pos < start_t:
+                    n = 0
+                elif pos <= end_t:
+                    frac = min(1.0, max(0.0, (pos - start_t) / dur))
+                    n = int(frac * len(text))
+                else:
+                    n = len(text)
+
+                n = max(0, min(len(text), n))
+                try:
+                    if n > 0:
+                        stdscr.addstr(row, left, text[:n], curses.color_pair(5) | curses.A_REVERSE)
+                    if n < len(text):
+                        stdscr.addstr(row, left + n, text[n:], curses.color_pair(5) | curses.A_BOLD)
+
+                    # Subtle beat pulse during instrumental pause between lines
+                    if pos > end_t and (next_t - pos) >= 1.2:
+                        pulse = int((time.monotonic() * 2.0) % 3)
+                        p_str = " ·" * (pulse + 1)
+                        col_p = left + len(text) + 1
+                        if col_p + len(p_str) < avail_w:
+                            stdscr.addstr(row, col_p, p_str, curses.color_pair(5) | curses.A_DIM)
+                except curses.error:
+                    pass
+            elif i < cur:
+                # Past lines: Dimmed
+                try:
+                    stdscr.addstr(row, left, text, curses.color_pair(6) | curses.A_DIM)
+                except curses.error:
+                    pass
+            else:
+                # Upcoming lines
+                attr = curses.color_pair(6)
+                if (i - cur) > 2:
+                    attr |= curses.A_DIM
+                try:
+                    stdscr.addstr(row, left, text, attr)
+                except curses.error:
+                    pass
     else:
-        # classic equalizer
-        heights = []
-        for i in range(w):
-            v = (math.sin(amp_t * (1.6 + (i % 7) * 0.35) + i * 1.7) + 1) / 2.0
-            if state == "loading":
-                v = v * 0.4 + 0.3
-            heights.append(int(round(v * amp * 7.0)))
-        line = "".join(_AMP_BLOCKS[min(7, h)] if h > 0 else " " for h in heights)
-    try:
-        stdscr.addstr(4, 0, line[: w - 1], curses.color_pair(3))
-    except curses.error:
-        pass
+        # Authentic plain unsynced lyrics — NO fake timestamps, NO fake sweeps
+        scroll = max(0, min(max(0, len(lines) - window), ui.get("lyr_scroll", 0)))
+        for i in range(scroll, min(len(lines), scroll + window)):
+            row = top + (i - scroll)
+            text = ("  " + lines[i]["text"])[:avail_w]
+            try:
+                stdscr.addstr(row, left, text, curses.color_pair(6))
+            except curses.error:
+                pass
 
 
-def _draw_header(stdscr, status: dict, w: int) -> None:
+def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
+              viz_top: int = 4, viz_h: int = 4) -> None:
+    """Multi-row animated Hi-Fi equalizer / oscilloscope visualizer.
+
+    Modes:
+      - 'spectrum': Multi-band graphic equalizer with floating peak hold dots and color tiers
+      - 'stereo':   Dual-channel Left/Right mirrored mastering spectrum analyzer
+      - 'wave':     High-resolution Braille sub-pixel vector oscilloscope
+      - 'bars':     Continuous dense liquid-mercury sound wave
+    """
+    if viz_h <= 0 or w < 4:
+        return
+
+    mode = ui.get("viz_mode") or _visualizer()
+    if mode not in _VIZ_MODES:
+        mode = "spectrum"
+
     state = status.get("state", "idle")
-    mark = _STATE_MARK.get(state, "·")
+    vol = status.get("volume", 80) if status.get("volume") is not None else 80
+    amp = min(1.0, 0.35 + (vol / 160.0))
+    aw = max(1, w - 1)
+
+    # ── State 1: IDLE (ambient breathing wave) ──────────────────────────
+    if state == "idle":
+        for r in range(viz_h):
+            row_idx = viz_top + (viz_h - 1 - r)
+            if r == 0:
+                chars = []
+                for x in range(aw):
+                    v = (math.sin(amp_t * 0.9 + x * 0.12) + 1.0) * 0.5
+                    idx = int(v * 3.0)
+                    chars.append(_AMP_BLOCKS[idx])
+                try:
+                    stdscr.addstr(row_idx, 0, "".join(chars)[:aw], curses.color_pair(6) | curses.A_DIM)
+                except curses.error:
+                    pass
+            else:
+                try:
+                    stdscr.addstr(row_idx, 0, " " * aw, curses.color_pair(6))
+                except curses.error:
+                    pass
+        return
+
+    # ── State 2: LOADING (sleek scanning sonar pulse) ───────────────────
+    if state == "loading":
+        sweep = (math.sin(amp_t * 3.2) + 1.0) * 0.5 * (aw - 1)
+        for r in range(viz_h):
+            row_idx = viz_top + (viz_h - 1 - r)
+            chars = []
+            for x in range(aw):
+                dist = abs(x - sweep)
+                if dist < 3.0:
+                    h_val = max(0, min(7, int((3.0 - dist) / 3.0 * 7)))
+                    chars.append(_AMP_BLOCKS[h_val])
+                elif dist < 9.0:
+                    chars.append("·")
+                else:
+                    chars.append(" ")
+            color = curses.color_pair(3) | (curses.A_BOLD if r == 0 else curses.A_DIM)
+            try:
+                stdscr.addstr(row_idx, 0, "".join(chars)[:aw], color)
+            except curses.error:
+                pass
+        return
+
+    # ── State 3: PLAYING or PAUSED ───────────────────────────────────────
+    is_paused = (state == "paused")
+
+    # ── MODE: WAVE (Braille sub-pixel vector oscilloscope) ───────────────
+    if mode == "wave":
+        px_h = viz_h * 4
+        px_w = aw * 2
+        canvas = [[0 for _ in range(aw)] for _ in range(viz_h)]
+        DOTS = [
+            [0x01, 0x08],
+            [0x02, 0x10],
+            [0x04, 0x20],
+            [0x40, 0x80],
+        ]
+
+        beat = (math.sin(amp_t * 2.05 * math.pi) + 1.0) * 0.5
+        for x in range(px_w):
+            y1 = (math.sin(amp_t * 3.8 + x * 0.07) * 0.65 +
+                  math.cos(amp_t * 7.0 + x * 0.14) * 0.25 * beat)
+            y2 = (math.sin(amp_t * -3.1 + x * 0.09 + 1.2) * 0.5 +
+                  math.sin(amp_t * 10.5 + x * 0.21) * 0.18)
+
+            for y_val in (y1, y2):
+                py = int(round((y_val * 0.42 * amp + 0.5) * (px_h - 1)))
+                py = max(0, min(px_h - 1, py))
+                inv_y = (px_h - 1) - py
+                cx = x // 2
+                cy = inv_y // 4
+                sub_x = x % 2
+                sub_y = inv_y % 4
+                if 0 <= cy < viz_h and 0 <= cx < aw:
+                    canvas[cy][cx] |= DOTS[sub_y][sub_x]
+
+        for r in range(viz_h):
+            row_idx = viz_top + r
+            line = "".join(chr(0x2800 + canvas[r][c]) for c in range(aw))
+            if is_paused:
+                attr = curses.color_pair(6) | curses.A_DIM
+            elif r == 0:
+                attr = curses.color_pair(5) | curses.A_BOLD
+            elif r == viz_h - 1:
+                attr = curses.color_pair(1) | curses.A_BOLD
+            else:
+                attr = curses.color_pair(3)
+            try:
+                stdscr.addstr(row_idx, 0, line[:aw], attr)
+            except curses.error:
+                pass
+
+        if is_paused:
+            p_badge = " [ PAUSED · SHEATHED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            try:
+                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: STEREO (Dual Channel L/R Mirrored Mastering Display) ───────
+    if mode == "stereo":
+        center_x = (aw - 1) // 2
+        slot = 3
+        bar_w = 2
+        gap = 1
+        side_bands = max(3, min(32, (center_x - 3) // slot))
+        max_sub = viz_h * 8
+
+        beat_kick = max(0.0, math.cos(amp_t * 2.05 * math.pi)) ** 3.5
+
+        left_h = []
+        right_h = []
+        for i in range(side_bands):
+            frac = i / max(1, side_bands - 1)
+            b_l = (math.sin(amp_t * 4.2 + i * 0.42) * 0.4 + 0.6) * (1.0 - frac * 0.28 + 0.42 * beat_kick)
+            b_r = (math.sin(amp_t * 4.2 + i * 0.42 + 0.5) * 0.4 + 0.6) * (1.0 - frac * 0.28 + 0.42 * beat_kick)
+            left_h.append(min(1.0, max(0.05, b_l * amp)) * max_sub)
+            right_h.append(min(1.0, max(0.05, b_r * amp)) * max_sub)
+
+        left_h = left_h[::-1]
+
+        for r in range(viz_h - 1, -1, -1):
+            row_idx = viz_top + (viz_h - 1 - r)
+            left_cells = []
+            for h_val in left_h:
+                if h_val >= (r + 1) * 8:
+                    c = "█" * bar_w
+                elif h_val <= r * 8:
+                    c = " " * bar_w
+                else:
+                    c = _AMP_BLOCKS[min(7, max(0, int(h_val - r * 8) - 1))] * bar_w
+                left_cells.append(c)
+            l_str = (" " * gap).join(left_cells)
+
+            right_cells = []
+            for h_val in right_h:
+                if h_val >= (r + 1) * 8:
+                    c = "█" * bar_w
+                elif h_val <= r * 8:
+                    c = " " * bar_w
+                else:
+                    c = _AMP_BLOCKS[min(7, max(0, int(h_val - r * 8) - 1))] * bar_w
+                right_cells.append(c)
+            r_str = (" " * gap).join(right_cells)
+
+            pad_l = max(0, center_x - len(l_str) - 2)
+            div = " ▌▐ " if r == 0 else (" ║ " if r == 1 else " │ ")
+            full_line = (" " * pad_l) + l_str + div + r_str
+
+            if is_paused:
+                attr = curses.color_pair(6) | curses.A_DIM
+            elif r == viz_h - 1 and viz_h > 2:
+                attr = curses.color_pair(4) | curses.A_BOLD
+            elif r >= viz_h // 2:
+                attr = curses.color_pair(2) | curses.A_BOLD
+            else:
+                attr = curses.color_pair(3)
+            try:
+                stdscr.addstr(row_idx, 0, full_line[:aw], attr)
+            except curses.error:
+                pass
+
+        if is_paused:
+            p_badge = " [ PAUSED · SHEATHED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            try:
+                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: BARS (Continuous dense fluid sound wave) ───────────────────
+    if mode == "bars":
+        max_sub = viz_h * 8
+        heights = []
+        beat = max(0.0, math.cos(amp_t * 2.05 * math.pi)) ** 3.0
+        for x in range(aw):
+            v = (math.sin(amp_t * 3.3 + x * 0.14) * 0.32 +
+                 math.cos(amp_t * 5.1 - x * 0.08) * 0.26 +
+                 math.sin(amp_t * 1.5 + x * 0.04) * 0.22 + 0.5)
+            v = min(1.0, max(0.05, (v * 0.74 + beat * 0.26) * amp))
+            heights.append(int(round(v * max_sub)))
+
+        for r in range(viz_h - 1, -1, -1):
+            row_idx = viz_top + (viz_h - 1 - r)
+            row_chars = []
+            for h_val in heights:
+                if h_val >= (r + 1) * 8:
+                    cell = "█"
+                elif h_val <= r * 8:
+                    cell = " "
+                else:
+                    cell = _AMP_BLOCKS[min(7, max(0, int(h_val - r * 8) - 1))]
+                row_chars.append(cell)
+            line = "".join(row_chars)[:aw]
+
+            if is_paused:
+                attr = curses.color_pair(6) | curses.A_DIM
+            elif r == viz_h - 1 and viz_h > 2:
+                attr = curses.color_pair(4) | curses.A_BOLD
+            elif r >= viz_h // 2:
+                attr = curses.color_pair(2) | curses.A_BOLD
+            else:
+                attr = curses.color_pair(3)
+            try:
+                stdscr.addstr(row_idx, 0, line, attr)
+            except curses.error:
+                pass
+
+        if is_paused:
+            p_badge = " [ PAUSED · SHEATHED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            try:
+                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: SPECTRUM (Default - Multi-band Graphic Equalizer + Peaks) ───
+    slot = 3
+    bar_w = 2
+    gap = 1
+    num_bands = max(4, min(64, (aw - 2) // slot))
+    pad = max(0, (aw - (num_bands * slot - gap)) // 2)
+    max_sub = viz_h * 8
+
+    bands_state = ui.get("viz_bands")
+    if not isinstance(bands_state, list) or len(bands_state) != num_bands:
+        bands_state = [0.0] * num_bands
+        ui["viz_bands"] = bands_state
+
+    peaks_state = ui.get("viz_peaks")
+    if not isinstance(peaks_state, list) or len(peaks_state) != num_bands:
+        peaks_state = [0.0] * num_bands
+        ui["viz_peaks"] = peaks_state
+
+    holds_state = ui.get("viz_holds")
+    if not isinstance(holds_state, list) or len(holds_state) != num_bands:
+        holds_state = [0] * num_bands
+        ui["viz_holds"] = holds_state
+
+    beat_kick = max(0.0, math.cos(amp_t * 2.05 * math.pi)) ** 3.5
+    beat_snare = max(0.0, math.sin(amp_t * 2.05 * math.pi + 1.5)) ** 4.0
+
+    for i in range(num_bands):
+        frac = i / max(1, num_bands - 1)
+        if frac < 0.25:
+            b = (math.sin(amp_t * 3.8 + i * 0.4) * 0.3 + 0.7) * (0.4 + 0.6 * beat_kick)
+        elif frac < 0.65:
+            b = (math.sin(amp_t * 5.4 + i * 0.6) * 0.35 +
+                 math.cos(amp_t * 2.8 - i * 0.3) * 0.35 + 0.3) * (0.5 + 0.5 * beat_snare)
+        else:
+            flutter = math.sin(amp_t * 15.2 + i * 1.2) * 0.4 + 0.6
+            b = flutter * (0.3 + 0.4 * beat_kick + 0.3 * beat_snare)
+
+        target = min(1.0, max(0.05, b * amp)) * max_sub
+
+        if is_paused:
+            curr = bands_state[i]
+        else:
+            prev = bands_state[i]
+            if target > prev:
+                curr = prev + (target - prev) * 0.72
+            else:
+                curr = max(0.0, prev - max(0.65, prev * 0.15))
+            bands_state[i] = curr
+
+            pk = peaks_state[i]
+            hld = holds_state[i]
+            if curr >= pk:
+                peaks_state[i] = curr
+                holds_state[i] = 5
+            else:
+                if hld > 0:
+                    holds_state[i] = hld - 1
+                else:
+                    peaks_state[i] = max(0.0, pk - 0.55)
+
+    for r in range(viz_h - 1, -1, -1):
+        row_idx = viz_top + (viz_h - 1 - r)
+        if is_paused:
+            attr_bar = curses.color_pair(6) | curses.A_DIM
+            attr_peak = curses.color_pair(6) | curses.A_DIM
+        elif r == viz_h - 1 and viz_h > 2:
+            attr_bar = curses.color_pair(4) | curses.A_BOLD
+            attr_peak = curses.color_pair(5) | curses.A_BOLD
+        elif r >= viz_h // 2:
+            attr_bar = curses.color_pair(2) | curses.A_BOLD
+            attr_peak = curses.color_pair(5) | curses.A_BOLD
+        else:
+            attr_bar = curses.color_pair(3)
+            attr_peak = curses.color_pair(5) | curses.A_BOLD
+
+        row_str = [" " * pad]
+        peak_positions = []
+        col_offset = pad
+
+        for i in range(num_bands):
+            h_val = bands_state[i]
+            p_val = peaks_state[i]
+            p_row = int(p_val // 8)
+
+            if h_val >= (r + 1) * 8:
+                cell = "█" * bar_w
+            elif h_val <= r * 8:
+                if p_row == r and p_val > 1.5:
+                    cell = "▔" * bar_w
+                    peak_positions.append(col_offset)
+                else:
+                    cell = " " * bar_w
+            else:
+                rem = int(h_val - r * 8)
+                cell = _AMP_BLOCKS[min(7, max(0, rem - 1))] * bar_w
+
+            row_str.append(cell)
+            col_offset += bar_w
+            if i < num_bands - 1:
+                row_str.append(" " * gap)
+                col_offset += gap
+
+        full_row = "".join(row_str)[:aw]
+        try:
+            stdscr.addstr(row_idx, 0, full_row, attr_bar)
+            if not is_paused:
+                for px in peak_positions:
+                    if px + bar_w <= aw:
+                        stdscr.addstr(row_idx, px, "▔" * bar_w, attr_peak)
+        except curses.error:
+            pass
+
+    if is_paused:
+        p_badge = " [ PAUSED · SHEATHED ] "
+        p_col = max(0, (aw - len(p_badge)) // 2)
+        try:
+            stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                          curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+        except curses.error:
+            pass
+
+
+
+def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
+    """5-row header: brand bar · title+time · progress bar · meta · visualizer."""
+    W = w - 1   # safe write width
+    state = status.get("state", "idle")
+    mark  = _STATE_MARK.get(state, "·")
+    label = _STATE_KAOMOJI.get(state, state.upper())
+
+    # ── Row 0: brand bar ─────────────────────────────────────────────────
+    # Left: logo + state.  Right: state badge right-aligned.
+    left0  = f" ♪  Skye Player"
+    right0 = f" {mark} {label} "
+    pad0   = max(0, W - len(left0) - len(right0))
     try:
-        stdscr.addstr(0, 0, f" tune  {mark} {state}"[: w - 1], curses.color_pair(1))
+        stdscr.addstr(0, 0, (left0 + " " * pad0 + right0)[:W],
+                      curses.color_pair(1) | curses.A_BOLD)
     except curses.error:
         pass
 
-    title = status.get("title") or "(nothing playing)"
-    pos_s = _fmt_time(status.get("position"))
-    dur = status.get("duration")
-    dur_s = _fmt_time(dur)
-    time_str = f"{pos_s} / {dur_s}"
+    # ── Row 1: title (bold) + time right-aligned ─────────────────────────
+    title    = status.get("title") or "— nothing playing —"
+    pos_s    = _fmt_time(status.get("position"))
+    dur      = status.get("duration")
+    dur_s    = _fmt_time(dur)
+    time_str = f"  {pos_s} / {dur_s}  "
+    title_w  = max(0, W - len(time_str))
     try:
-        stdscr.addstr(1, 0, title[: w - 1], curses.color_pair(5))
+        stdscr.addstr(1, 0, (" " + title)[:title_w], curses.color_pair(5) | curses.A_BOLD)
     except curses.error:
         pass
     try:
-        stdscr.addstr(1, max(0, w - len(time_str) - 1), time_str, curses.color_pair(3))
-    except curses.error:
-        pass
-
-    frac = (status.get("position") or 0) / dur if dur else 0.0
-    bw = max(0, w - 2)
-    filled = int(bw * min(1.0, max(0.0, frac)))
-    bar = "#" * filled + "-" * (bw - filled)
-    try:
-        stdscr.addstr(2, 0, "[" + bar + "]", curses.color_pair(3))
+        stdscr.addstr(1, max(0, W - len(time_str)), time_str, curses.color_pair(3))
     except curses.error:
         pass
 
-    idx = status.get("current_index", -1)
-    meta = (f"vol {status.get('volume')} · repeat {status.get('repeat')} · "
-            f"shuffle {'on' if status.get('shuffle') else 'off'} · "
-            f"queue {idx + 1 if idx >= 0 else 0}/{status.get('queue_len', 0)}")
+    # ── Row 2: progress bar ───────────────────────────────────────────────
+    frac   = (status.get("position") or 0) / dur if dur else 0.0
+    frac   = min(1.0, max(0.0, frac))
+    bw     = max(0, W - 2)
+    filled = int(bw * frac)
+    bar    = "━" * filled + "─" * (bw - filled)
+    # tick mark at playhead
+    if 0 < filled < bw:
+        bar = bar[:filled - 1] + "●" + bar[filled:]
+    try:
+        stdscr.addstr(2, 0, "▕" + bar[:bw] + "▏", curses.color_pair(3))
+    except curses.error:
+        pass
+
+    # ── Row 3: meta info ──────────────────────────────────────────────────
+    idx      = status.get("current_index", -1)
+    vol      = status.get("volume") or 0
+    n_blocks = max(0, min(10, round(vol / 10)))
+    vol_bar  = "▰" * n_blocks + "▱" * (10 - n_blocks)
+    rpt      = status.get("repeat", "off")
+    rpt_icon = {"off": "↩", "all": "↻", "one": "⟳"}.get(rpt, rpt)
+    shuf     = "⇄" if status.get("shuffle") else "→"
+    q_pos    = f"{idx + 1 if idx >= 0 else 0}/{status.get('queue_len', 0)}"
+    meta     = f"  {vol_bar} {vol}%  {rpt_icon} repeat  {shuf} shuffle  ♯ {q_pos}"
     sp = status.get("speed")
     if sp and sp != 1:
-        meta += f" · {sp}×"
+        meta += f"  ×{sp}"
     if status.get("fav"):
-        meta += " · ♥"
+        meta += "  ♥"
     rem = status.get("sleep_remaining")
     if rem:
-        m, _s = divmod(int(rem), 60)
-        meta += f" · ⏰ {m}m"
+        m, _ = divmod(int(rem), 60)
+        meta += f"  ⏰ {m}m"
     mood = status.get("mood")
     if mood:
-        refine = " ".join(x for x in (status.get("mood_lang"), status.get("mood_artist")) if x)
-        meta += f" · 🎧 {mood}" + (f"·{refine}" if refine else "")
+        meta += f"  🎧 {mood}"
     if status.get("smart_queue"):
-        meta += " · ⚡smart"
+        meta += "  ⚡ smart"
     err = status.get("error")
     if err:
-        meta += f"   [!] {err}"
+        meta += f"  ✖ {err}"
     try:
-        stdscr.addstr(3, 0, meta[: w - 1], curses.color_pair(4) if err else curses.color_pair(3))
+        stdscr.addstr(3, 0, meta[:W], curses.color_pair(4) if err else curses.color_pair(3))
     except curses.error:
         pass
 
 
-def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = "") -> None:
-    vis = _visible_queue(status, qfilter)  # (real_index, track) pairs
+def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = "",
+                top: int = 6, left: int = 0, max_w: int | None = None) -> None:
+    """Render the queue starting at row top, two rows per track (title + channel)."""
+    vis = _visible_queue(status, qfilter)
     cur = status.get("current_index", -1)
-    top = 6  # below the amplifier row
     bottom = max(top + 1, h - 3)
     page = bottom - top
     if page <= 0:
         return
-    items_page = max(1, page // 2)  # premium two-line rows (title + artist)
-    focus = qsel if 0 <= qsel < len(vis) else 0
-    start = max(0, min(focus - items_page // 2, max(0, len(vis) - items_page)))
-    for k in range(start, min(len(vis), start + items_page)):
-        real_idx, t = vis[k]
-        is_cur, is_sel = real_idx == cur, k == qsel
-        row = top + (k - start) * 2
-        mark = "▶" if is_cur else ("▸" if is_sel else " ")
-        body = f"{mark} {real_idx + 1:2}  {t.get('title', '')}"
-        text = f"{body[: max(0, w - 12)]:<{max(0, w - 10)}}  {_fmt_time(t.get('duration')):>5}"
-        if is_sel and is_cur:
-            attr = curses.color_pair(2) | curses.A_REVERSE
-        elif is_sel:
-            attr = curses.color_pair(6) | curses.A_REVERSE
-        elif is_cur:
-            attr = curses.color_pair(2)
-        else:
-            attr = curses.color_pair(6)
+    avail_w = max(1, min(max_w if max_w is not None else w, w - left - 1))
+    if not vis:
+        empty_msg = ("  (queue is empty  ·  / to search)" if not qfilter else f"  (no tracks matching '{qfilter}')")
         try:
-            stdscr.addstr(row, 0, text[: w - 1], attr)
+            stdscr.addstr(top, left, empty_msg[:avail_w], curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
-        ch = (t.get("channel") or "").strip()
-        if ch and row + 1 < bottom:
-            ch_attr = (curses.color_pair(2) | curses.A_DIM) if is_cur else (curses.color_pair(6) | curses.A_DIM)
-            try:
-                stdscr.addstr(row + 1, 0, f"    {ch}"[: w - 1], ch_attr)
-            except curses.error:
-                pass
+        return
+
+    items_page = max(1, page // 2)
+    focus = qsel if 0 <= qsel < len(vis) else 0
+    start = max(0, min(focus - items_page // 2, max(0, len(vis) - items_page)))
+
+    for k in range(start, min(len(vis), start + items_page)):
+        real_idx, t = vis[k]
+        is_cur = real_idx == cur
+        is_sel = k == qsel
+        row    = top + (k - start) * 2
+
+        # Track row
+        num     = f"{real_idx + 1:>3}"
+        icon    = "▶" if is_cur else ("›" if is_sel else " ")
+        dur     = _fmt_time(t.get("duration"))
+        dur_str = f"  {dur}" if avail_w > 26 else ""
+        prefix  = f"{icon}{num}  "
+        title_avail = max(1, avail_w - len(prefix) - len(dur_str))
+        title_text  = (t.get("title") or "")[:title_avail]
+        line1   = f"{prefix}{title_text:<{title_avail}}{dur_str}"
+
+        if is_sel and is_cur:
+            attr1 = curses.color_pair(2) | curses.A_REVERSE
+        elif is_sel:
+            attr1 = curses.color_pair(6) | curses.A_REVERSE
+        elif is_cur:
+            attr1 = curses.color_pair(2) | curses.A_BOLD
+        else:
+            attr1 = curses.color_pair(6)
+        try:
+            stdscr.addstr(row, left, line1[:avail_w], attr1)
+        except curses.error:
+            pass
+
+        # Channel / artist row
+        if row + 1 < bottom:
+            ch = (t.get("channel") or "").strip()
+            if ch:
+                ch_line = f"     ↳ {ch}"
+                ch_attr = (curses.color_pair(2) | curses.A_DIM) if is_cur else (curses.color_pair(6) | curses.A_DIM)
+                try:
+                    stdscr.addstr(row + 1, left, ch_line[:avail_w], ch_attr)
+                except curses.error:
+                    pass
 
 
-def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str]) -> None:
-    top = 4
+def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str], top: int = 4) -> None:
     try:
         stdscr.addstr(top, 0, " Theme  ·  ↑/↓ browse (live) · enter apply · esc cancel"[: w - 1],
                       curses.color_pair(1) | curses.A_BOLD)
@@ -835,15 +1622,15 @@ def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str]) -> No
 
 
 def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg,
-                 sbucket: dict | None = None) -> None:
+                 sbucket: dict | None = None, top: int = 4) -> None:
     # input line
     line = "Search: " + sq + "_"
     try:
-        stdscr.addstr(6, 0, line[: w - 1], curses.A_BOLD | curses.color_pair(3))
+        stdscr.addstr(top, 0, line[: w - 1], curses.A_BOLD | curses.color_pair(3))
     except curses.error:
         pass
 
-    row = 8
+    row = top + 2
     if ssearching:
         try:
             stdscr.addstr(row, 0, f"searching {sq!r}…"[: w - 1], curses.color_pair(6))

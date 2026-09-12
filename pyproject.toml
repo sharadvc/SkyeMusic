@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tune"
 version = "0.1.0"
-description = "Terminal music player that streams from YouTube (mpv + yt-dlp, no login, no API key)"
+description = "Skye Player — Terminal music player that streams from YouTube (mpv + yt-dlp, no login, no API key)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -26,6 +26,8 @@ dev = ["ruff", "mypy"]
 media = ["pyobjc-framework-Quartz; sys_platform == 'darwin'"]
 
 [project.scripts]
+skye = "tune.cli:main"
+skyemusic = "tune.cli:main"
 tune = "tune.cli:main"
 
 [tool.setuptools]

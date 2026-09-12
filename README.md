@@ -1,4 +1,4 @@
-# tune
+# Skye Player (tune)
 
 A terminal music player that streams from YouTube. **No login, no API key.**
 Search any song by name and control playback like a real player — from any shell.
@@ -91,6 +91,8 @@ A URL or bare YouTube video id works anywhere a song name does: `tune play <url>
 
 | Key | Action |
 | --- | --- |
+| `tab` | cycle layout: **Dual-Pane Studio** → **Full Queue** → **Full Lyrics** |
+| `v` | cycle visualizer: **Spectrum** (peak hold) → **Stereo** (L/R) → **Wave** (vector) → **Bars** |
 | `/` | search YouTube (type a query, enter, pick a result) |
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
@@ -99,8 +101,11 @@ A URL or bare YouTube video id works anywhere a song name does: `tune play <url>
 | `enter` | jump to the selected queue row |
 | `+` / `-` | volume up / down (5) |
 | `[` / `]` | slow down / speed up (10%) |
-| `←` / `→` | seek back / forward 10s |
-| `l` | synced karaoke lyrics pane (elapsed part highlighted) |
+| `←` / `→` | seek back / forward 5s |
+| `,` / `.` | fine-tune lyrics sync live (-0.25s / +0.25s) |
+| `o` | reset lyrics sync offset to 0.00s |
+| `l` | toggle between Studio mode and full-screen Lyrics |
+| `PgUp` / `PgDn` | scroll lyrics |
 | `a` | terminal album art |
 | `f` | filter the queue by text (type live, enter keep, esc clear) |
 | `:` | command bar (e.g. `:volume 50`, `:play search terms`) |
@@ -109,8 +114,11 @@ A URL or bare YouTube video id works anywhere a song name does: `tune play <url>
 | `t` | theme picker — ↑/↓ browse (whole UI previews live), enter apply, esc cancel |
 | `q` / `Esc` | quit the TUI and stop playback (daemon stays running) |
 
-A live animated equalizer shows below the progress bar — it bounces while
-playing, freezes on pause, and lies flat when idle.
+### Dual-Pane Studio Mode
+On standard terminals (80+ columns), Studio Mode displays side-by-side:
+- **Left Pane**: Interactive track queue with playhead, selection cursor, and durations.
+- **Right Pane**: Live synchronized karaoke stage with character-by-character reverse sweep, auto-scroll, and multi-tier focus lighting.
+- **Top Visualizer**: Multi-row Hi-Fi audio visualizer spanning the entire display width.
 
 In search mode: `enter` plays the highlighted result, `tab` adds it to the queue,
 `↑/↓` move, `backspace` edits, `esc` clears the query or goes back. Every other

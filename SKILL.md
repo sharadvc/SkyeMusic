@@ -1,9 +1,9 @@
 ---
 name: tune
-description: Terminal music player — search & stream any song from YouTube (no login), with play/pause, next/prev, volume, seek, queue, shuffle/repeat, CLI and a full-screen TUI.
+description: Skye Player — Terminal music player — search & stream any song from YouTube (no login), with play/pause, next/prev, volume, seek, queue, shuffle/repeat, CLI and a full-screen TUI.
 ---
 
-# tune
+# Skye Player (tune)
 
 A personal terminal music player that streams from YouTube via mpv + yt-dlp.
 No login, no API key. A background daemon owns mpv and the queue; the CLI and
