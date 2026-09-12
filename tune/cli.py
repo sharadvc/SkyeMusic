@@ -326,11 +326,15 @@ def run(argv: list[str]) -> int:
             if not port:
                 print("tune: remote control is disabled (config http_port 0)", file=sys.stderr)
                 return 1
-            print(f"remote control:\n  http://localhost:{port}")
             ip = subprocess.run(["ipconfig", "getifaddr", "en0"],
                                 capture_output=True, text=True).stdout.strip()
+            remote_url = f"http://{ip}:{port}" if ip else f"http://localhost:{port}"
+            from .qr import render_qr
+            print("\n✦ Skye Mobile Web Remote ✦")
+            print(f"  Local URL:  http://localhost:{port}")
             if ip:
-                print(f"  http://{ip}:{port}   (phone on the same Wi-Fi)")
+                print(f"  Wi-Fi URL:  {remote_url}   (Scan QR code with phone camera)")
+            print(render_qr(remote_url))
         except Exception as e:
             print(f"tune: {e}", file=sys.stderr)
             return 1
