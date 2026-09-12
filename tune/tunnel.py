@@ -36,16 +36,18 @@ def stop_tunnel() -> None:
         _tunnel_url = None
 
 
-def start_tunnel(port: int = 8765, timeout: float = 10.0) -> Optional[str]:
-    """Start a zero-config public HTTPS tunnel (cloudflared -> localtunnel -> serveo)."""
+def start_tunnel(port: int = 8765, timeout: float = 8.0) -> Optional[str]:
+    """Start a zero-config public HTTPS tunnel (cloudflared -> localhost.run -> serveo)."""
     global _tunnel_process, _tunnel_url
 
     with _lock:
         if _tunnel_url:
             return _tunnel_url
 
+    local_cf = os.path.expanduser("~/.config/tune/bin/cloudflared")
+    cloudflared = shutil.which("cloudflared") or ("/opt/homebrew/bin/cloudflared" if os.path.exists("/opt/homebrew/bin/cloudflared") else local_cf)
+
     # Strategy 1: cloudflared (Cloudflare Quick Tunnels)
-    cloudflared = shutil.which("cloudflared") or "/opt/homebrew/bin/cloudflared"
     if os.path.exists(cloudflared):
         try:
             proc = subprocess.Popen(
@@ -61,7 +63,7 @@ def start_tunnel(port: int = 8765, timeout: float = 10.0) -> Optional[str]:
             while time.time() - start_t < timeout:
                 line = proc.stdout.readline() if proc.stdout else ""
                 if not line:
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     continue
                 match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
                 if match:
@@ -78,8 +80,41 @@ def start_tunnel(port: int = 8765, timeout: float = 10.0) -> Optional[str]:
         except Exception:
             pass
 
-    # Strategy 2: ssh serveo.net fallback
+    # Strategy 2: ssh to localhost.run (Zero-dependency on any OS with SSH)
     ssh = shutil.which("ssh")
+    if ssh:
+        try:
+            proc = subprocess.Popen(
+                [ssh, "-o", "StrictHostKeyChecking=no", "-R", f"80:localhost:{port}", "nokey@localhost.run"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            start_t = time.time()
+            found_url = None
+
+            while time.time() - start_t < timeout:
+                line = proc.stdout.readline() if proc.stdout else ""
+                if not line:
+                    time.sleep(0.05)
+                    continue
+                match = re.search(r"https://[a-zA-Z0-9-]+\.lhr\.life", line)
+                if match:
+                    found_url = match.group(0)
+                    break
+
+            if found_url:
+                with _lock:
+                    _tunnel_process = proc
+                    _tunnel_url = found_url
+                return found_url
+            else:
+                proc.terminate()
+        except Exception:
+            pass
+
+    # Strategy 3: ssh to serveo.net
     if ssh:
         try:
             proc = subprocess.Popen(
@@ -95,7 +130,7 @@ def start_tunnel(port: int = 8765, timeout: float = 10.0) -> Optional[str]:
             while time.time() - start_t < timeout:
                 line = proc.stdout.readline() if proc.stdout else ""
                 if not line:
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     continue
                 match = re.search(r"https://[a-zA-Z0-9-]+\.serveo\.net", line)
                 if match:
