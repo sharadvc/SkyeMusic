@@ -288,6 +288,9 @@ class Daemon:
             self._error = str(e)
             self._state = "idle"
         self.q.save()
+        if self.cfg.get("notify", True):
+            from .notify import notify_track
+            notify_track(track)
         # Background prefetch lyrics for current and upcoming tracks so track changes have 0ms latency
         threading.Thread(target=self._prefetch_lyrics_worker, args=(track,), daemon=True).start()
         self._prefetch_next_locked()
