@@ -1,0 +1,34 @@
+{
+  "name": "skyemusic",
+  "version": "0.1.0",
+  "description": "Skye Player — Terminal music player that streams from YouTube (no login, no API key). Multi-room global party, 10-band EQ, Hinglish lyrics, offline downloader, TUI.",
+  "main": "bin/index.js",
+  "bin": {
+    "skye": "bin/index.js",
+    "skyemusic": "bin/index.js",
+    "tune": "bin/index.js"
+  },
+  "scripts": {
+    "start": "node bin/index.js",
+    "postinstall": "node bin/postinstall.js"
+  },
+  "keywords": [
+    "music",
+    "player",
+    "youtube",
+    "terminal",
+    "cli",
+    "tui",
+    "skye",
+    "skyemusic",
+    "tune",
+    "mpv",
+    "party"
+  ],
+  "author": "Sharad <heysharad@proton.me>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heysharad/tune.git"
+  }
+}

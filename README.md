@@ -11,20 +11,23 @@ Pure Python stdlib — zero pip dependencies.
 - `mpv` (audio backend): `brew install mpv`
 - `yt-dlp` (YouTube lookup): `brew install yt-dlp` (or `pipx install yt-dlp`)
 
-## Quick One-Line Global Install
+## Super Easy Install & Run
 
-Installs `skye`, `skyemusic`, and `tune` globally on your system, auto-installing all system dependencies (`mpv`, `yt-dlp`, `cloudflared`):
+### Method 1: NPM / NPX (Easiest)
 
 ```sh
-./install.sh
+# Run instantly with NPX (Zero install)
+npx skyemusic
+
+# Or install globally with NPM
+npm install -g skyemusic
 ```
 
-Or from remote:
+### Method 2: One-Line Shell Installer
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/heysharad/tune/main/install.sh | bash
 ```
-
-The installer configures system dependencies, installs python CLI binaries (`skye`, `skyemusic`, `tune`), ensures `~/.local/bin` is on PATH, and runs an automated health check!
 
 ## Usage
 
