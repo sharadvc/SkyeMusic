@@ -371,9 +371,10 @@ function askPin(){document.getElementById('pinoverlay').style.display='flex';doc
 function savePin(){pin=document.getElementById('p').value;localStorage.setItem('tune_pin',pin);
  document.getElementById('pinoverlay').style.display='none';refresh()}
 refresh();loadDevices();loadMatrix();
-setInterval(refresh,2000);
-setInterval(loadDevices,6000);
-setInterval(loadMatrix,4000);
+setInterval(refresh,150);
+setInterval(loadDevices,3000);
+setInterval(loadMatrix,1500);
+
 </script></body></html>"""
 
 
