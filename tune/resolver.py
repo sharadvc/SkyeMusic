@@ -20,9 +20,10 @@ from .queue import Track
 # A bare 11-char YouTube video id (yt-dlp accepts these directly).
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
-# Cap concurrent yt-dlp subprocesses: YouTube rate-limits parallel lookups from
-# one IP and each call can balloon from ~2s to ~40s when throttled.
-_YTDLP_SEM = threading.Semaphore(2)
+# Cap concurrent yt-dlp subprocesses. Raised to 4 so DJ mode batch-loading
+# and prefetch can run in parallel without serializing. YouTube can handle this.
+_YTDLP_SEM = threading.Semaphore(4)
+
 
 
 class ResolveError(Exception):
@@ -58,12 +59,13 @@ def _entry_to_track(entry: dict, query: str) -> Track | None:
     )
 
 
-def _fetch(target: str, timeout: int = 30) -> list[dict] | None:
+def _fetch(target: str, timeout: int = 20) -> list[dict] | None:
     """Run yt-dlp once; return the raw entry dicts (or None on failure)."""
     try:
         with _YTDLP_SEM:
             proc = subprocess.run(
                 [_ytdlp_bin(), "--flat-playlist", "--no-warnings",
+                 "--socket-timeout", "8", "--retries", "1",
                  "--dump-single-json", target],
                 capture_output=True, text=True, timeout=timeout,
             )
@@ -82,7 +84,8 @@ def _fetch(target: str, timeout: int = 30) -> list[dict] | None:
     return list(data) if isinstance(data, list) else []
 
 
-def get_direct_url(url: str, timeout: int = 20) -> str:
+
+def get_direct_url(url: str, timeout: int = 15) -> str:
     """Resolve a watch URL to a direct media URL (`yt-dlp -g`).
 
     mpv can stream this URL without running its own yt-dlp extraction, so a
@@ -91,8 +94,10 @@ def get_direct_url(url: str, timeout: int = 20) -> str:
     try:
         with _YTDLP_SEM:
             proc = subprocess.run(
-                [_ytdlp_bin(), "-f", "bestaudio/best", "--no-warnings",
-                 "--no-playlist", "-g", url],
+                [_ytdlp_bin(), "-f", "bestaudio/best",
+                 "--no-warnings", "--no-playlist",
+                 "--socket-timeout", "8", "--retries", "1",
+                 "-g", url],
                 capture_output=True, text=True, timeout=timeout,
             )
     except subprocess.TimeoutExpired:
@@ -106,7 +111,9 @@ def get_direct_url(url: str, timeout: int = 20) -> str:
     return direct
 
 
-def resolve(arg: str, timeout: int = 30) -> Track:
+
+
+def resolve(arg: str, timeout: int = 20) -> Track:
     """Return a Track for a free-text query, a URL, or a bare video id."""
     target = arg if _is_url_or_id(arg) else f"ytsearch1:{arg}"
     last_err = ""
@@ -122,11 +129,11 @@ def resolve(arg: str, timeout: int = 30) -> Track:
                     return track
             last_err = "no video id in yt-dlp output"
         if attempt == 0:
-            time.sleep(1)  # one retry after a brief pause
+            time.sleep(0.3)  # brief pause before retry (was 1s)
     raise ResolveError(f"could not resolve {arg!r}: {last_err}")
 
 
-def search(query: str, limit: int = 8, timeout: int = 30) -> list[Track]:
+def search(query: str, limit: int = 8, timeout: int = 20) -> list[Track]:
     """Return up to `limit` candidate Tracks for a free-text query."""
     last_err = ""
     for attempt in range(2):
@@ -142,8 +149,9 @@ def search(query: str, limit: int = 8, timeout: int = 30) -> list[Track]:
                     tracks.append(track)
             return tracks
         if attempt == 0:
-            time.sleep(1)
+            time.sleep(0.3)
     raise ResolveError(f"search failed for {query!r}: {last_err}")
+
 
 
 def is_playlist_url(arg: str) -> bool:

@@ -90,6 +90,10 @@ def send_cmd(verb: str, arg: object = "") -> dict:
         except (OSError, ValueError) as e:
             last = e
             if not started and not _daemon_running():
+                if verb in ("quit", "quit-daemon", "status", "info", "history", "queue", "list", "lyrics"):
+                    if verb in ("quit", "quit-daemon"):
+                        return {"ok": True, "data": {"quit": True}}
+                    return {"ok": False, "error": "daemon not running"}
                 try:
                     if os.path.exists(CTRL_SOCK):
                         os.unlink(CTRL_SOCK)
@@ -99,3 +103,22 @@ def send_cmd(verb: str, arg: object = "") -> dict:
                 started = True
             time.sleep(0.2)
     raise TuneError(f"could not reach tune daemon: {last}")
+
+
+def ensure_daemon() -> None:
+    """Ensure the daemon process is running. Auto-starts it if needed."""
+    if not _daemon_running():
+        try:
+            if os.path.exists(CTRL_SOCK):
+                os.unlink(CTRL_SOCK)
+        except OSError:
+            pass
+        start_daemon()
+        for _ in range(40):
+            try:
+                res = _connect("ping", "")
+                if res.get("ok"):
+                    return
+            except Exception:
+                time.sleep(0.2)
+

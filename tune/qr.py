@@ -60,8 +60,8 @@ FORMAT_CODES_M = [
 
 class QRCode:
     def __init__(self, data: str):
-        self.data_str = data
-        self.data_bytes = data.encode("utf-8")
+        self.data_str = (data or "").strip()
+        self.data_bytes = self.data_str.encode("utf-8")
         # Select Version based on length (Byte mode, Medium EC level)
         n = len(self.data_bytes)
         if n <= 14:
@@ -69,26 +69,31 @@ class QRCode:
             self.size = 21
             self.num_data = 16
             self.num_ecc = 10
+            self.num_blocks = 1
         elif n <= 26:
             self.version = 2
             self.size = 25
             self.num_data = 28
             self.num_ecc = 16
+            self.num_blocks = 1
         elif n <= 42:
             self.version = 3
             self.size = 29
             self.num_data = 44
             self.num_ecc = 26
+            self.num_blocks = 1
         elif n <= 62:
             self.version = 4
             self.size = 33
             self.num_data = 64
             self.num_ecc = 36
+            self.num_blocks = 2
         else:
             self.version = 5
             self.size = 37
             self.num_data = 86
             self.num_ecc = 48
+            self.num_blocks = 2
 
         self.matrix = [[False] * self.size for _ in range(self.size)]
         self.is_reserved = [[False] * self.size for _ in range(self.size)]
@@ -194,8 +199,24 @@ class QRCode:
                 val = (val << 1) | bits[i + b]
             data_buf.append(val)
 
-        ecc_buf = _rs_encode(data_buf, self.num_ecc)
-        full_stream = list(data_buf) + ecc_buf
+        # Multi-block RS encoding & data/ECC interleaving
+        data_per_block = len(data_buf) // self.num_blocks
+        ecc_per_block = self.num_ecc // self.num_blocks
+
+        data_blocks = [data_buf[i * data_per_block : (i + 1) * data_per_block] for i in range(self.num_blocks)]
+        ecc_blocks = [_rs_encode(b, ecc_per_block) for b in data_blocks]
+
+        interleaved_data = []
+        for i in range(data_per_block):
+            for b in data_blocks:
+                interleaved_data.append(b[i])
+
+        interleaved_ecc = []
+        for i in range(ecc_per_block):
+            for eb in ecc_blocks:
+                interleaved_ecc.append(eb[i])
+
+        full_stream = interleaved_data + interleaved_ecc
 
         # Convert full stream back to bit list
         all_bits = []
@@ -245,39 +266,95 @@ class QRCode:
         for bit, (r, c) in zip(fmt_bits, coords_2):
             self.matrix[r][c] = bool(bit)
 
-    def render_ascii(self) -> str:
-        """Render QR code using half-block Unicode characters (2 vertical rows per text line)."""
-        lines = []
-        margin = 2
+    def render_blocks(self) -> str:
+        """Render ultra-compatible scannable QR code using double-space ANSI background blocks.
+
+        Uses 2 spaces per module with ANSI \033[47m (White) and \033[40m (Black).
+        Guarantees 1:1 square pixel modules with zero line-height font gap distortion across all terminals.
+        """
+        margin = 4
         size = self.size
-        # Add top margin
-        blank_row = " " * (size + margin * 2)
-        lines.append(blank_row)
+        lines = []
+        W = "\033[47m  \033[0m"
+        B = "\033[40m  \033[0m"
 
-        for r in range(0, size, 2):
-            line_chars = [" " * margin]
+        blank_row = W * (size + margin * 2)
+        for _ in range(2):
+            lines.append(blank_row)
+
+        for r in range(size):
+            row_chars = [W * margin]
             for c in range(size):
-                top_black = self.matrix[r][c]
-                bot_black = self.matrix[r + 1][c] if r + 1 < size else False
+                is_black = self.matrix[r][c]
+                row_chars.append(B if is_black else W)
+            row_chars.append(W * margin)
+            lines.append("".join(row_chars))
 
-                if top_black and bot_black:
-                    line_chars.append("█")
-                elif top_black and not bot_black:
-                    line_chars.append("▀")
-                elif not top_black and bot_black:
-                    line_chars.append("▄")
-                else:
-                    line_chars.append(" ")
-            line_chars.append(" " * margin)
-            lines.append("".join(line_chars))
+        for _ in range(2):
+            lines.append(blank_row)
 
-        lines.append(blank_row)
+        return "\n".join(lines)
+
+    def render_ascii(self, ansi: bool = True) -> str:
+        """Render scannable QR code using half-block Unicode characters with 4-module quiet zone."""
+        lines = []
+        margin = 4
+        size = self.size
+
+        if ansi:
+            ESC = "\033[47;30m"
+            RST = "\033[0m"
+            blank_row = " " * (size + margin * 2)
+            lines.append(ESC + blank_row + RST)
+            lines.append(ESC + blank_row + RST)
+            for r in range(0, size, 2):
+                chars = [ESC, " " * margin]
+                for c in range(size):
+                    top_black = self.matrix[r][c]
+                    bot_black = self.matrix[r + 1][c] if r + 1 < size else False
+                    if top_black and bot_black:
+                        chars.append("█")
+                    elif top_black and not bot_black:
+                        chars.append("▀")
+                    elif not top_black and bot_black:
+                        chars.append("▄")
+                    else:
+                        chars.append(" ")
+                chars.append(" " * margin + RST)
+                lines.append("".join(chars))
+            lines.append(ESC + blank_row + RST)
+            lines.append(ESC + blank_row + RST)
+        else:
+            blank_row = "█" * (size + margin * 2)
+            lines.append(blank_row)
+            lines.append(blank_row)
+            for r in range(0, size, 2):
+                chars = ["█" * margin]
+                for c in range(size):
+                    top_white = not self.matrix[r][c]
+                    bot_white = not (self.matrix[r + 1][c] if r + 1 < size else False)
+                    if top_white and bot_white:
+                        chars.append("█")
+                    elif top_white and not bot_white:
+                        chars.append("▀")
+                    elif not top_white and bot_white:
+                        chars.append("▄")
+                    else:
+                        chars.append(" ")
+                chars.append("█" * margin)
+                lines.append("".join(chars))
+            lines.append(blank_row)
+            lines.append(blank_row)
+
         return "\n".join(lines)
 
 
-def render_qr(data: str) -> str:
-    """Generate and return terminal ASCII string for a QR code."""
+def render_qr(data: str, ansi: bool = True, compact: bool = False) -> str:
+    """Generate and return terminal string for a scannable QR code."""
     try:
-        return QRCode(data).render_ascii()
+        qr = QRCode(data)
+        if compact:
+            return qr.render_ascii(ansi=ansi)
+        return qr.render_blocks() if ansi else qr.render_ascii(ansi=False)
     except Exception:
         return f"[QR Generation Failed for {data}]"

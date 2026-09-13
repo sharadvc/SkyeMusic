@@ -5,6 +5,7 @@ import {
   Heart,
   ListMusic,
   Loader2,
+  Mic,
   Pause,
   Play,
   Search,
@@ -34,6 +35,7 @@ import {
   type Status,
   type Track,
 } from "@/lib/api"
+import { DjSet } from "@/components/DjSet"
 import { cn } from "@/lib/utils"
 
 const DEMON_SLAYER_STATUS = {
@@ -72,6 +74,10 @@ export default function App() {
   const act = useCallback(
     async (verb: string, arg = "") => {
       try {
+        if (verb === "dj") {
+          const nextDjMode = arg !== "off"
+          setStatus((prev) => (prev ? { ...prev, dj_mode: nextDjMode } : prev))
+        }
         await send(verb, arg)
         await refresh()
       } catch (e) {
@@ -94,7 +100,7 @@ export default function App() {
   const dsStatus = DEMON_SLAYER_STATUS[status?.state as keyof typeof DEMON_SLAYER_STATUS] || "👺 STANDBY"
 
   return (
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col px-4 pb-16 pt-6 font-mono selection:bg-emerald-500/30">
+    <div className={cn("mx-auto flex min-h-dvh flex-col px-4 pb-16 pt-6 font-mono selection:bg-emerald-500/30 transition-all duration-300", status?.dj_mode ? "max-w-6xl" : "max-w-md")}>
       {/* header */}
       <header className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -106,14 +112,29 @@ export default function App() {
             <span className="text-[10px] font-semibold tracking-widest text-emerald-300/80">DEMON SLAYER CORPS</span>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={status?.dj_mode ? "default" : "outline"}
             className={cn(
-              "size-2 rounded-full",
-              playing ? "animate-pulse bg-emerald-400 shadow-sm shadow-emerald-400" : status ? "bg-muted-foreground/50" : "animate-pulse bg-muted-foreground/50",
+              "h-7 gap-1 px-2 text-[11px] font-extrabold border-emerald-500/40 transition-all",
+              status?.dj_mode
+                ? "bg-emerald-500 text-zinc-950 hover:bg-emerald-400 shadow-md shadow-emerald-500/30"
+                : "text-emerald-400 hover:bg-emerald-500/10"
             )}
-          />
-          <span className="text-[11px] font-semibold text-emerald-300">{dsStatus}</span>
+            onClick={() => act("dj", status?.dj_mode ? "off" : "")}
+          >
+            🎧 {status?.dj_mode ? "DJ ON" : "DJ MODE"}
+          </Button>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                playing ? "animate-pulse bg-emerald-400 shadow-sm shadow-emerald-400" : status ? "bg-muted-foreground/50" : "animate-pulse bg-muted-foreground/50",
+              )}
+            />
+            <span className="text-[11px] font-semibold text-emerald-300">{dsStatus}</span>
+          </div>
         </div>
       </header>
 
@@ -131,8 +152,13 @@ export default function App() {
           <Skeleton className="h-4 w-full" />
           <Skeleton className="mx-auto h-16 w-72 rounded-full" />
         </div>
+      ) : status.dj_mode ? (
+        <div className="mb-4">
+          <DjSet status={status} onAct={act} />
+        </div>
       ) : (
         <>
+
           {/* now playing */}
           <Card className="border-emerald-500/30 bg-card/60 p-6 pt-8 backdrop-blur-xl shadow-lg shadow-emerald-500/10">
             <div className="relative mx-auto w-fit">
@@ -241,12 +267,21 @@ export default function App() {
                   <ListMusic className="size-4" />
                   Up Next · {status.queue_len}
                 </TabsTrigger>
+                <TabsTrigger value="lyrics" className="flex-1">
+                  <Mic className="size-4" />
+                  Lyrics
+                </TabsTrigger>
                 <TabsTrigger value="search" className="flex-1">
                   <Search className="size-4" />
                   Search
                 </TabsTrigger>
               </TabsList>
               <QueueTab status={status} onAct={act} />
+              <div className="mt-3">
+                <TabsContent value="lyrics">
+                  <LyricsTab status={status} />
+                </TabsContent>
+              </div>
               <SearchTab />
             </Tabs>
           </div>
@@ -316,6 +351,9 @@ function MoodRadio({
         ))}
         <Button size="sm" variant="secondary" onClick={() => onAct("discover")}>
           ✨ Discover
+        </Button>
+        <Button size="sm" variant="secondary" onClick={() => onAct("dj")}>
+          🎧 DJ Mode
         </Button>
       </div>
       <div className="mt-2 flex gap-2">
@@ -514,5 +552,92 @@ function SearchRow({ track }: { track: Track }) {
         <Play className="ml-0.5 size-3.5 fill-current" />
       </span>
     </a>
+  )
+}
+
+function LyricsTab({ status }: { status: Status }) {
+  const [lines, setLines] = useState<Array<{ start?: number; end?: number; text: string; synced: boolean }>>([])
+  const [note, setNote] = useState<string>("")
+  const [loading, setLoading] = useState(false)
+  const [curIdx, setCurIdx] = useState(0)
+
+  useEffect(() => {
+    if (!status.url) return
+    let active = true
+    setLoading(true)
+    api<{ lines: Array<{ start?: number; end?: number; text: string; synced: boolean }>; note?: string }>("lyrics")
+      .then((data) => {
+        if (!active) return
+        setLines(data.lines || [])
+        setNote(data.note || "")
+      })
+      .catch(() => {
+        if (!active) return
+        setLines([])
+        setNote("lyrics unavailable")
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [status.url])
+
+  const pos = status.position || 0
+  const isSynced = lines.some((l) => l.synced && l.start !== undefined && l.start !== null)
+
+  useEffect(() => {
+    if (!isSynced || !lines.length) return
+    let best = 0
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].start !== undefined && lines[i].start! <= pos) {
+        best = i
+      } else {
+        break
+      }
+    }
+    setCurIdx(best)
+  }, [pos, isSynced, lines])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" /> loading lyrics…
+      </div>
+    )
+  }
+
+  if (!lines.length) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        {note || "no lyrics available for this track"}
+      </div>
+    )
+  }
+
+  return (
+    <ScrollArea className="mt-3 h-[42vh]">
+      <div className="space-y-3 px-1 text-center">
+        {lines.map((l, i) => {
+          const isActive = isSynced && i === curIdx
+          return (
+            <div
+              key={`${i}-${l.text}`}
+              className={cn(
+                "py-1.5 text-sm transition-all duration-200",
+                isActive
+                  ? "scale-105 font-bold text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]"
+                  : isSynced && i < curIdx
+                  ? "text-muted-foreground/35"
+                  : "text-muted-foreground/80",
+              )}
+            >
+              {l.text}
+            </div>
+          )
+        })}
+      </div>
+    </ScrollArea>
   )
 }

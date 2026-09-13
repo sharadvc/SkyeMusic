@@ -7,7 +7,9 @@ import subprocess
 import sys
 
 from . import __version__
-from .client import send_cmd
+from .client import ensure_daemon, send_cmd
+
+
 
 _STATE_MARK = {"playing": "▶", "paused": "⏸", "loading": "…", "idle": "·"}
 
@@ -258,14 +260,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("art", help="show terminal album art for the current track")
     sub.add_parser("share", help="copy the current track's URL, or --queue for the whole queue").add_argument(
         "--queue", action="store_true", help="share the full queue as a playlist URL")
-    sub.add_parser("dj", help="start a DJ session (random mood + crossfade + smart queue)")
+    dj_p = sub.add_parser("dj", help="start/control DJ session (start, off, scratch)")
+    dj_p.add_argument("action", nargs="?", default="", help="DJ action: 'on', 'off', 'scratch'")
     sub.add_parser("import").add_argument("arg", nargs="+", help="import spotify <playlist-url>")
     sub.add_parser("rate").add_argument("n", type=int, choices=range(6), help="rate the current track 0-5")
-    sub.add_parser("party").add_argument("action", nargs="?", default="start", help="start | stop")
     sub.add_parser("wrapped", help="your all-time listening in review")
     sub.add_parser("doctor", help="health check (mpv, yt-dlp, network)")
-    sub.add_parser("remote", help="show the phone/HTTP remote URL")
     pl = sub.add_parser("playlist", help="manage named playlists")
+
+
     pl.add_argument("action",
                     choices=["save", "load", "add", "show", "delete", "list", "smart"])
     pl.add_argument("name", nargs="?", default="", help="playlist name, or smart mode")
@@ -278,8 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
         "n", nargs="?", type=int, default=None, help="jump to bookmark <n>")
     sub.add_parser("sleep").add_argument("minutes", nargs="?", default="",
                                          help="minutes, or 'off' to cancel")
-    sub.add_parser("config").add_argument("key_value", nargs="+",
-                                          help="config key, or 'key value' (e.g. autoplay on)")
+    sub.add_parser("airdrop", help="AirDrop the web remote URL to your iPhone/iPad")
+    sub.add_parser("remote", help="show mobile web remote URLs, QR code, and AirDrop link")
     sub.add_parser("quit", help="stop the daemon and player")
     return p
 
@@ -289,9 +292,20 @@ def run(argv: list[str]) -> int:
     args = p.parse_args(argv)
 
     if args.cmd is None:
+        ensure_daemon()
         from .tui import run as tui_run
         tui_run()
         return 0
+    if args.cmd == "dj" and not getattr(args, "action", ""):
+        ensure_daemon()
+        try:
+            send_cmd("dj", "")
+        except Exception:
+            pass
+        from .tui import run as tui_run
+        tui_run()
+        return 0
+
     if args.cmd == "daemon":
         from .daemon import run as daemon_run
         daemon_run()
@@ -319,7 +333,7 @@ def run(argv: list[str]) -> int:
             print(f"tune: {e}", file=sys.stderr)
             return 1
         return 0
-    if args.cmd == "remote":
+    if args.cmd in ("remote", "airdrop"):
         try:
             resp = send_cmd("remote")
             port = (resp.get("data") or {}).get("port")
@@ -328,17 +342,24 @@ def run(argv: list[str]) -> int:
                 return 1
             ip = subprocess.run(["ipconfig", "getifaddr", "en0"],
                                 capture_output=True, text=True).stdout.strip()
-            remote_url = f"http://{ip}:{port}" if ip else f"http://localhost:{port}"
+            hostname = subprocess.run(["scutil", "--get", "LocalHostName"],
+                                      capture_output=True, text=True).stdout.strip()
+            remote_url = f"http://{hostname}.local:{port}/" if hostname else (f"http://{ip}:{port}/" if ip else f"http://localhost:{port}/")
             from .qr import render_qr
+            from .airdrop import trigger_airdrop
             print("\n✦ Skye Mobile Web Remote ✦")
-            print(f"  Local URL:  http://localhost:{port}")
+            print(f"  Local URL:   http://localhost:{port}/")
+            print(f"  Bonjour URL: {remote_url}")
             if ip:
-                print(f"  Wi-Fi URL:  {remote_url}   (Scan QR code with phone camera)")
-            print(render_qr(remote_url))
+                print(f"  Wi-Fi IP:    http://{ip}:{port}/")
+            print("\n📲 AirDrop Share Sheet opening for your iPhone...")
+            trigger_airdrop(remote_url)
+            print(render_qr(remote_url, compact=True))
         except Exception as e:
             print(f"tune: {e}", file=sys.stderr)
             return 1
         return 0
+
 
     verb = args.cmd
     arg: object = ""
@@ -366,13 +387,11 @@ def run(argv: list[str]) -> int:
         elif src:
             arg = f"{src}search:{args.query}"
     elif verb == "dj":
-        arg = ""
+        arg = getattr(args, "action", "") or ""
     elif verb == "import":
         arg = " ".join(args.arg)
     elif verb == "rate":
         arg = str(args.n)
-    elif verb == "party":
-        arg = args.action
     elif verb == "wrapped":
         arg = ""
     elif verb == "doctor":
@@ -484,8 +503,15 @@ def run(argv: list[str]) -> int:
         extra = f"  (+{cnt} more shuffled)" if cnt > 0 else ""
         print(f"🎲 {data.get('title')}{extra}")
     elif verb == "dj":
-        cnt = (data.get("count") or 1) - 1
-        print(f"🎧⚡ DJ: {data.get('mood')} · {data.get('title')}  (+{cnt} more)")
+        if data.get("dj_mode") is False:
+            print("🎧 DJ mode disabled.")
+        elif data.get("fx"):
+            print(f"🎧⚡ DJ FX triggered: {data.get('fx')}")
+        else:
+            cnt = max(0, (data.get("count") or 1) - 1)
+            mood = f"{data.get('mood')} · " if data.get("mood") else ""
+            title = data.get("title") or "Playing"
+            print(f"🎧⚡ DJ Mode Active · {mood}{title}  (+{cnt} more queued)")
     elif verb == "mood":
         cnt = (data.get("count") or 1) - 1
         refine = " ".join(x for x in (data.get("lang"), data.get("artist")) if x)
@@ -515,26 +541,6 @@ def run(argv: list[str]) -> int:
         print(f"✨ discover: {data.get('title')}  (+{cnt} more)")
     elif verb == "rate":
         print(f"{'⭐' * data.get('rating', 0)}  {data.get('title')}")
-    elif verb == "party":
-        if data.get("party"):
-            token = data.get("token")
-            port = data.get("port") or 8765
-            ip = subprocess.run(["ipconfig", "getifaddr", "en0"],
-                                capture_output=True, text=True).stdout.strip()
-            local_party_url = f"http://{ip}:{port}?party={token}" if ip else f"http://localhost:{port}?party={token}"
-            global_url = data.get("global_url")
-            global_party_url = f"{global_url}?party={token}" if global_url else None
-
-            target_qr_url = global_party_url or local_party_url
-            from .qr import render_qr
-            print(f"\n🎉 Multi-Room Party Mode Started! (PIN / Token: {token})")
-            if local_party_url:
-                print(f"  Local Wi-Fi Join:     {local_party_url}")
-            if global_party_url:
-                print(f"  🌍 Global World Join:  {global_party_url}   (Works anywhere outside Wi-Fi over 5G/4G!)")
-            print(render_qr(target_qr_url))
-        else:
-            print("🎉 Party mode stopped")
     elif verb == "import":
         print(f"⇣ imported {data.get('added')} tracks  (queue: {data.get('queue_len')})")
     elif verb == "wrapped":

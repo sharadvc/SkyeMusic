@@ -97,8 +97,20 @@ def mpv_argv(sock: str) -> list[str]:
         "--prefetch-playlist=yes",
         "--volume=80",
         f"--volume-max={VOLUME_MAX}",
+        # bestaudio/best: prefer audio-only stream, fall back to best merged.
+        # "bestaudio" alone fails (~exit 1) for videos without a split audio stream.
         "--ytdl-format=bestaudio/best",
+        # Streaming: start audio as soon as a few seconds are buffered
+        "--cache=yes",
+        "--demuxer-readahead-secs=20",
+        "--demuxer-max-bytes=50MiB",
+        "--demuxer-max-back-bytes=20MiB",
+        # Fail fast on stalled network so we can retry
+        "--network-timeout=10",
     ]
+
+
+
 
 
 def _track_to_dict(t: Track) -> dict:
@@ -192,6 +204,11 @@ class Daemon:
         self._undo: list = []  # ("remove", i, track) | ("clear", tr, idx) |
                               # ("replace", tr, idx) | ("shuffle", tr)
         self._eq_preset: str = str(self.cfg.get("equalizer_preset") or "flat")
+        # DJ mode is always off on daemon start — never restored from config.
+        # This ensures `skye` always opens in normal view.
+        self._dj_mode: bool = False
+        self.cfg.set("dj_mode", False)
+
 
     # --- mpv management ----------------------------------------------------
 
@@ -882,16 +899,23 @@ class Daemon:
     def _tracks_for_arg(self, arg: str, fast: bool = False) -> list[Track]:
         """One argument -> list of tracks (playlist URL resolves to many).
 
-        With `fast=True`, a direct URL / video id becomes a placeholder Track
-        immediately — mpv can play it without a yt-dlp lookup, so playback
-        starts now and the real metadata is filled in afterwards. Queries and
-        playlists always resolve fully (they need yt-dlp to find videos).
+        With `fast=True`:
+        - Direct URL/video-id: returns a placeholder Track immediately so mpv
+          can begin loading while metadata is enriched in the background.
+        - Text query: resolves normally (yt-dlp search, ~1-2s). The resolver
+          timeouts and semaphore limits are already optimized for speed.
+        - Playlists: always resolved fully (need yt-dlp to enumerate videos).
         """
         if is_playlist_url(arg):
             return resolve_playlist(arg)
         if fast and _is_url_or_id(arg):
             return [self._placeholder_track(arg)]
+        # Text query — resolve fully (fast path via resolver optimizations)
         return [self._cached_resolve(arg)]
+
+
+
+
 
     def _placeholder_track(self, arg: str) -> Track:
         self._pending_enrich.add(arg)
@@ -957,7 +981,6 @@ class Daemon:
             "queue": self._h_queue,
             "import": self._h_import,
             "rate": self._h_rate,
-            "party": self._h_party,
             "share": self._h_share,
             "wrapped": self._h_wrapped,
             "doctor": self._h_doctor,
@@ -1362,24 +1385,113 @@ class Daemon:
         return {"ok": False, "error":
                 "queue: add <q> | remove <n> | move <from> <to> | shuffle | clear | smart"}
 
-    def _h_dj(self, _arg: str = "") -> dict:
-        """DJ mode: random mood × crossfade × smart-queue. No silence."""
-        import random as _rand
-        moods = sorted(MOODS)
-        mood = _rand.choice(moods)
-        self.cfg.set("smart_queue", True)
-        ctx = self._session_ctx()
-        limit = int(self.cfg.get("mix_count", 20))
-        try:
-            tracks = build_mood_session(mood, self._engine_search, limit=limit,
-                                        avoid=ctx["avoid"], prefs=ctx["prefs"])
-        except Exception as e:
-            return {"ok": False, "error": f"could not build a session: {e}"}
-        if not tracks:
-            return {"ok": False, "error": "could not start DJ — network down?"}
-        self._play_tracks(tracks, mood=mood, lang=None, artist=None)
-        return {"ok": True, "data": {"title": tracks[0].title, "count": len(tracks),
-                                     "mood": mood, "dj": True}}
+    def _h_dj(self, arg: str = "") -> dict:
+        """Real DJ mode: beat-matching, seamless crossfading, audio FX & smart queue."""
+        arg = (arg or "").strip().lower()
+        if arg in ("off", "stop", "disable"):
+            with self._lock:
+                self._dj_mode = False
+                self.cfg.set("dj_mode", False)
+                if self.player:
+                    try:
+                        self.player.set_property("af", "")
+                    except Exception:
+                        pass
+            return {"ok": True, "data": {"dj_mode": False}}
+
+        if arg in ("scratch", "effect", "fx"):
+            if self.player:
+                try:
+                    self.player.set_property("af", "lavfi=[lowpass=f=1200]")
+                    threading.Timer(0.8, lambda: self.player and self.player.set_property("af", "")).start()
+                except Exception:
+                    pass
+            return {"ok": True, "data": {"fx": "scratch", "dj_mode": True}}
+
+        if arg in ("bass", "bassdrop", "bass_drop"):
+            if self.player:
+                try:
+                    # Massive bass boost + low-pass — classic drop effect
+                    self.player.set_property("af", "lavfi=[equalizer=f=60:width_type=h:width=80:g=12]")
+                    threading.Timer(1.5, lambda: self.player and self.player.set_property(
+                        "af", "lavfi=[equalizer=f=60:width_type=h:width=50:g=4]")).start()
+                except Exception:
+                    pass
+            return {"ok": True, "data": {"fx": "bass_drop", "dj_mode": True}}
+
+        if arg in ("filter", "filterdrop", "filter_drop"):
+            if self.player:
+                try:
+                    # High-pass filter sweep — strips lows, then opens back up
+                    self.player.set_property("af", "lavfi=[highpass=f=800]")
+                    threading.Timer(1.2, lambda: self.player and self.player.set_property("af", "")).start()
+                except Exception:
+                    pass
+            return {"ok": True, "data": {"fx": "filter", "dj_mode": True}}
+
+        if arg in ("fade", "fadenext", "fade_next"):
+            if self.player:
+                try:
+                    # Quick volume duck + advance to next track
+                    self.player.set_property("volume", 30)
+                    def _fade_and_next():
+                        import time as _t
+                        _t.sleep(0.6)
+                        with self._op_lock:
+                            with self._lock:
+                                self._advance_locked()
+                        _t.sleep(0.3)
+                        if self.player:
+                            try:
+                                vol = int(self.cfg.get("volume") or 80)
+                                self.player.set_property("volume", vol)
+                            except Exception:
+                                pass
+                    threading.Thread(target=_fade_and_next, daemon=True).start()
+                except Exception:
+                    pass
+            return {"ok": True, "data": {"fx": "fade_next", "dj_mode": True}}
+
+
+
+        with self._lock:
+            self._dj_mode = True
+            self.cfg.set("dj_mode", True)
+            self.cfg.set("smart_queue", True)
+            self.cfg.set("gapless", True)
+            if self.player:
+                try:
+                    self.player.set_property("af", "lavfi=[equalizer=f=60:width_type=h:width=50:g=4]")
+                except Exception:
+                    pass
+
+        # Non-blocking: kick off track resolution in background so caller returns instantly
+        def _load_dj_tracks() -> None:
+            import random as _rand
+            moods = sorted(MOODS)
+            mood = _rand.choice(moods)
+            ctx = self._session_ctx()
+            limit = int(self.cfg.get("mix_count", 20))
+            try:
+                tracks = build_mood_session(mood, self._engine_search, limit=limit,
+                                            avoid=ctx["avoid"], prefs=ctx["prefs"])
+                if tracks:
+                    self._play_tracks(tracks, mood=mood, lang=None, artist=None)
+            except Exception:
+                pass
+
+        needs_load = not self.q.tracks or self._state in ("idle",)
+        if needs_load:
+            threading.Thread(target=_load_dj_tracks, daemon=True).start()
+
+        return {
+            "ok": True,
+            "data": {
+                "dj_mode": True,
+                "title": self.q.current().title if self.q.current() else "Loading DJ session…",
+                "count": len(self.q.tracks),
+            },
+        }
 
     def _h_import(self, arg: str) -> dict:
         """Import tracks from an external source (currently: Spotify playlist URL).
@@ -1449,35 +1561,6 @@ class Daemon:
             self._history = self._history[:200]
             self._save_history()
         return {"ok": True, "data": {"rating": n, "title": now.title}}
-
-    def _h_party(self, arg: str = "") -> dict:
-        """Start or stop a collaborative party session."""
-        from .party import party_engine
-        from .tunnel import start_tunnel
-        arg = (arg or "").strip()
-        if arg == "stop":
-            self.cfg.set("party_token", "")
-            party_engine.stop()
-            return {"ok": True, "data": {"party": False}}
-        if arg in ("", "start"):
-            import random as _rand
-            import string as _st
-            token = "".join(_rand.choice(_st.digits) for _ in range(6))
-            self.cfg.set("party_token", token)
-            port = int(self.cfg.get("http_port") or 8765)
-            global_url = start_tunnel(port)
-            party_engine.start(token, global_url=global_url)
-            return {
-                "ok": True,
-                "data": {
-                    "party": True,
-                    "token": token,
-                    "port": port,
-                    "global_url": global_url,
-                    "listeners": len(party_engine.listeners),
-                },
-            }
-        return {"ok": False, "error": "party start | stop"}
 
     def _h_share(self, _arg: str = "") -> dict:
         """Generate a shareable YouTube playlist URL from the current queue."""
@@ -2511,6 +2594,7 @@ class Daemon:
                     "mood_lang": self._session_lang,
                     "mood_artist": self._session_artist,
                     "smart_queue": bool(self.cfg.get("smart_queue")),
+                    "dj_mode": getattr(self, "_dj_mode", False),
                     "fav": self._is_fav(now.url if now else None),
                     "eq": getattr(self, "_eq_preset", "flat"),
                     "downloaded": is_downloaded(now.url) if now else False,
@@ -2519,6 +2603,14 @@ class Daemon:
             }
 
     def _h_quit(self, _arg: str = "") -> dict:
+        with self._lock:
+            if self.player:
+                try:
+                    self.player.set_property("pause", True)
+                    self.player.command("stop")
+                except Exception:
+                    pass
+            self._state = "idle"
         self._stop.set()
         return {"ok": True}
 
@@ -2573,12 +2665,17 @@ def run() -> None:
         print(f"tune: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Auto-resume: if the restored queue has a current track, load it and
-    # resume at the saved position (applied on the file-loaded event).
+    # Auto-resume: if the restored queue has a current track, load it in paused state
     with daemon._lock:
         if daemon.q.current() is not None:
             daemon._restore_pos = daemon.q.position
             daemon._load_current_locked()
+            if daemon.player:
+                try:
+                    daemon.player.set_property("pause", True)
+                except Exception:
+                    pass
+            daemon._state = "paused"
 
     threading.Thread(target=daemon._watch_mpv, daemon=True).start()
     threading.Thread(target=daemon._event_loop, daemon=True).start()

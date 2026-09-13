@@ -66,15 +66,21 @@ class TestTuiLayout(unittest.TestCase):
         ui = {"layout": "studio", "lyr_offset": 0.0}
         status = {}
 
-        # ',' nudges -0.25s
+        # ',' fine nudges -0.05s
         _now_key(ord(","), "now", status, ui)
-        self.assertEqual(ui["lyr_offset"], -0.25)
+        self.assertEqual(ui["lyr_offset"], -0.05)
 
-        # '.' nudges +0.25s
+        # '.' fine nudges +0.05s
         _now_key(ord("."), "now", status, ui)
         self.assertEqual(ui["lyr_offset"], 0.0)
-        _now_key(ord("."), "now", status, ui)
-        self.assertEqual(ui["lyr_offset"], 0.25)
+
+        # '<' coarse nudges -0.25s
+        _now_key(ord("<"), "now", status, ui)
+        self.assertEqual(ui["lyr_offset"], -0.25)
+
+        # '>' coarse nudges +0.25s
+        _now_key(ord(">"), "now", status, ui)
+        self.assertEqual(ui["lyr_offset"], 0.0)
 
         # 'o' resets to 0.0s
         _now_key(ord("o"), "now", status, ui)

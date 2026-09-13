@@ -220,6 +220,8 @@ def parse_vtt(text: str) -> list[dict]:
                 lines[-1]["end"] = max(lines[-1]["end"], end)
             else:
                 lines.append({"start": start, "end": end, "text": body, "synced": True})
+    for i, ln in enumerate(lines):
+        ln["next_start"] = lines[i + 1]["start"] if i + 1 < len(lines) else ln["end"] + 5.0
     return lines
 
 

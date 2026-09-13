@@ -173,7 +173,7 @@ def _loop(stdscr) -> None:
                     status = {"state": "idle", "error": resp.get("error")}
             except Exception:
                 status = {"state": "idle", "error": "daemon unreachable"}
-            time.sleep(0.08 if status.get("state") == "playing" else 0.25)
+            time.sleep(0.035 if status.get("state") == "playing" else 0.25)
 
     threading.Thread(target=_poller, daemon=True).start()
 
@@ -253,6 +253,9 @@ def _loop(stdscr) -> None:
 
         ch = stdscr.getch()
         ch = _resolve_key(stdscr, ch)
+        # In DJ mode, only 'now' key handler runs — filter/search/cmd are disabled
+        if status.get("dj_mode") and mode not in ("now", "quit"):
+            mode = "now"
         if mode == "cmd":
             mode, cmdq, cmdmsg = _cmd_key(ch, mode, cmdq, cmdmsg)
         elif mode == "search":
@@ -265,6 +268,7 @@ def _loop(stdscr) -> None:
             mode, qfilter = _filter_key(ch, mode, qfilter)
         else:
             mode = _now_key(ch, mode, status, ui, qfilter)
+
         if ui.pop("art", False):
             _show_art(stdscr)
         if mode == "quit":
@@ -371,11 +375,19 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
             _bg_send("seek", "-5")
         elif ch == curses.KEY_RIGHT:
             _bg_send("seek", "+5")
-        elif ch in (ord(","), ord("<")):
+        elif ch == ord(","):
+            ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) - 0.05, 2)
+            ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+            ui["viz_toast_t"] = time.monotonic()
+        elif ch == ord("<"):
             ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) - 0.25, 2)
             ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
             ui["viz_toast_t"] = time.monotonic()
-        elif ch in (ord("."), ord(">")):
+        elif ch == ord("."):
+            ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) + 0.05, 2)
+            ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+            ui["viz_toast_t"] = time.monotonic()
+        elif ch == ord(">"):
             ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) + 0.25, 2)
             ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
             ui["viz_toast_t"] = time.monotonic()
@@ -390,6 +402,8 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         return mode
 
     vis = _visible_queue(status, qfilter)
+    is_dj = status.get("dj_mode", False)
+
     if ch in (ord("q"), 27):
         mode = "quit"  # sentinel: quit the TUI and stop playback
     elif ch == ord("l"):
@@ -406,11 +420,19 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     elif ch == ord("r"):
         ui["lyr_fetched_track"] = ""
         _update_lyrics(ui, status)
-    elif ch in (ord(","), ord("<")):
+    elif ch == ord(","):
+        ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) - 0.05, 2)
+        ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("<"):
         ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) - 0.25, 2)
         ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
         ui["viz_toast_t"] = time.monotonic()
-    elif ch in (ord("."), ord(">")):
+    elif ch == ord("."):
+        ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) + 0.05, 2)
+        ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord(">"):
         ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) + 0.25, 2)
         ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
         ui["viz_toast_t"] = time.monotonic()
@@ -421,7 +443,13 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     elif ch == ord("v"):
         _cycle_viz_mode(ui)
     elif ch == ord("f"):
-        mode = "filter"
+        if is_dj:
+            _bg_send("dj", "fade")
+            ui["viz_toast"] = "🎧 FADE → NEXT ✦"
+            ui["viz_toast_t"] = time.monotonic()
+        else:
+            mode = "filter"
+
     elif ch == curses.KEY_UP:
         ui["qsel"] = max(0, ui["qsel"] - 1)
         ui["qsel_follow"] = False
@@ -432,12 +460,44 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         _bg_send("playindex", str(vis[min(ui["qsel"], len(vis) - 1)][0] + 1))
         ui["qsel_follow"] = False
     elif ch in (ord("e"), ord("E")):
-        _bg_send("eq", "next")
-        ui["viz_toast"] = "✦ EQUALIZER PRESET CHANGED ✦"
+        if is_dj:
+            _bg_send("dj", "filter")
+            ui["viz_toast"] = "🎧 FILTER SWEEP ✦"
+            ui["viz_toast_t"] = time.monotonic()
+        else:
+            _bg_send("eq", "next")
+            ui["viz_toast"] = "✦ EQUALIZER PRESET CHANGED ✦"
+            ui["viz_toast_t"] = time.monotonic()
+    elif ch in (ord("b"), ord("B")) and is_dj:
+        _bg_send("dj", "bass")
+        ui["viz_toast"] = "🔊 BASS DROP ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("F") and is_dj:
+        _bg_send("dj", "fade")
+        ui["viz_toast"] = "🎧 FADE → NEXT ✦"
         ui["viz_toast_t"] = time.monotonic()
     elif ch == ord("D"):
         _bg_send("download")
         ui["viz_toast"] = "✦ DOWNLOADING AUDIO... ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch in (ord("j"), ord("J")):
+
+        if is_dj:
+            _bg_send("dj", "off")
+            # Optimistic update: snap back to normal view immediately
+            # (status poller will confirm within ~250ms)
+            status["dj_mode"] = False
+            ui["viz_toast"] = "✦ DJ MODE DISABLED ✦"
+        else:
+            _bg_send("dj", "")
+            status["dj_mode"] = True
+            ui["viz_toast"] = "🎧⚡ REAL DJ MODE ACTIVATED ✦"
+        ui["viz_toast_t"] = time.monotonic()
+
+
+    elif ch == ord("S"):
+        _bg_send("dj", "scratch")
+        ui["viz_toast"] = "🎧⚡ DJ SCRATCH FX ✦"
         ui["viz_toast_t"] = time.monotonic()
     elif ch == ord("M"):
         _bg_send("radio", "lofi")
@@ -468,7 +528,13 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     elif ch == curses.KEY_LEFT:
         _bg_send("seek", "-5")
     elif ch == ord("s"):
-        _bg_send("shuffle")
+        if is_dj:
+            _bg_send("dj", "scratch")
+            ui["viz_toast"] = "🎧⚡ DJ SCRATCH FX ✦"
+            ui["viz_toast_t"] = time.monotonic()
+        else:
+            _bg_send("shuffle")
+
     elif ch == ord("r"):
         _cycle_repeat(status)
     elif ch == ord("a"):
@@ -813,14 +879,17 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
           theme_sel: int = 0, theme_names: list | None = None,
           qfilter: str = "", sbucket: dict | None = None) -> None:
     _draw_header(stdscr, status, w, amp_t)
-    viz_h = _viz_height(h, mode)
+    # In DJ mode the deck takes over the full screen below the header (row 4..h-2)
+    is_dj = bool(status.get("dj_mode"))
+    viz_h = (h - 5) if is_dj else _viz_height(h, mode)
     if viz_h > 0:
-        _draw_amp(stdscr, status, amp_t, w, ui, viz_top=4, viz_h=viz_h)
+        _draw_amp(stdscr, status, amp_t, w, ui, viz_top=4, viz_h=viz_h, total_h=h)
         sep_row = 4 + viz_h
         content_top = sep_row + 1
     else:
         sep_row = 4
         content_top = 4
+
 
     # Determine whether Dual-Pane Studio layout is active
     layout = ui.get("layout", "studio")
@@ -828,8 +897,9 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
     left_w = int(w * 0.46) if is_split else w
     right_w = (w - left_w - 1) if is_split else 0
 
-    # Section label separator
-    if sep_row < h - 1 and mode != "search":
+    # Section label separator (skip in DJ mode — deck owns full screen)
+    if sep_row < h - 1 and mode != "search" and not is_dj:
+
         err = status.get("error")
         if err:
             try:
@@ -906,6 +976,17 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
                           curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
+    elif is_dj:
+        # Full-screen DJ deck already drew itself via _draw_amp/_draw_dj_deck_tui.
+        # Just stamp the keybind hint on the very last row.
+        try:
+            hint = " 🎧 [s/S] scratch · [e/E] filter · [b/B] bass drop · [f/F] fade next · [J] exit DJ "
+
+            stdscr.addstr(h - 1, 0, hint[:w - 1],
+                          curses.color_pair(1) | curses.A_BOLD)
+        except curses.error:
+            pass
+
     elif is_split:
         _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=left_w)
         for r in range(content_top, max(content_top + 1, h - 1)):
@@ -1020,7 +1101,9 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
         start = max(0, cur - window // 2)
         for i in range(start, min(len(lines), start + window)):
             row = top + (i - start)
-            text = ("  " + lines[i]["text"])[:avail_w]
+            text_raw = lines[i]["text"]
+            pad = "  "
+            text_disp = (pad + text_raw)[:avail_w]
             ln = lines[i]
             if i == cur:
                 start_t = ln.get("start", 0.0)
@@ -1029,25 +1112,27 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
                 dur = max(0.001, end_t - start_t)
 
                 if pos < start_t:
-                    n = 0
+                    n_raw = 0
                 elif pos <= end_t:
                     frac = min(1.0, max(0.0, (pos - start_t) / dur))
-                    n = int(frac * len(text))
+                    n_raw = int(round(frac * len(text_raw)))
                 else:
-                    n = len(text)
+                    n_raw = len(text_raw)
 
-                n = max(0, min(len(text), n))
+                n_raw = max(0, min(len(text_raw), n_raw))
+                n_disp = len(pad) + n_raw if n_raw > 0 else 0
+                n_disp = min(len(text_disp), n_disp)
                 try:
-                    if n > 0:
-                        stdscr.addstr(row, left, text[:n], curses.color_pair(5) | curses.A_REVERSE)
-                    if n < len(text):
-                        stdscr.addstr(row, left + n, text[n:], curses.color_pair(5) | curses.A_BOLD)
+                    if n_disp > 0:
+                        stdscr.addstr(row, left, text_disp[:n_disp], curses.color_pair(5) | curses.A_REVERSE)
+                    if n_disp < len(text_disp):
+                        stdscr.addstr(row, left + n_disp, text_disp[n_disp:], curses.color_pair(5) | curses.A_BOLD)
 
                     # Subtle beat pulse during instrumental pause between lines
                     if pos > end_t and (next_t - pos) >= 1.2:
                         pulse = int((time.monotonic() * 2.0) % 3)
                         p_str = " ·" * (pulse + 1)
-                        col_p = left + len(text) + 1
+                        col_p = left + len(text_disp) + 1
                         if col_p + len(p_str) < avail_w:
                             stdscr.addstr(row, col_p, p_str, curses.color_pair(5) | curses.A_DIM)
                 except curses.error:
@@ -1055,7 +1140,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
             elif i < cur:
                 # Past lines: Dimmed
                 try:
-                    stdscr.addstr(row, left, text, curses.color_pair(6) | curses.A_DIM)
+                    stdscr.addstr(row, left, text_disp, curses.color_pair(6) | curses.A_DIM)
                 except curses.error:
                     pass
             else:
@@ -1064,7 +1149,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
                 if (i - cur) > 2:
                     attr |= curses.A_DIM
                 try:
-                    stdscr.addstr(row, left, text, attr)
+                    stdscr.addstr(row, left, text_disp, attr)
                 except curses.error:
                     pass
     else:
@@ -1079,8 +1164,251 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
                 pass
 
 
+def _draw_dj_deck_tui(stdscr, status: dict, amp_t: float, w: int,
+                      viz_top: int, total_h: int) -> None:
+    """Full-screen Pioneer CDJ/DDJ-style dual deck console drawn in DJ mode.
+
+    Takes the entire terminal from viz_top → total_h-2.
+    Layout:
+      LED light strip
+      Deck A title | Mixer header | Deck B title
+      [Platter rings] | [EQ/VU] | [Platter rings]
+      Waveform strip A | Crossfader | Waveform strip B
+      Progress/time   | BPM sync  | Pitch/cue
+      Bottom borders
+      Performance pads row
+      LED light strip
+    """
+    aw = max(1, w - 1)
+    state      = status.get("state", "idle")
+    is_playing = state == "playing"
+    pos        = float(status.get("position", 0) or 0)
+    dur        = float(status.get("duration", 1) or 1)
+    speed      = float(status.get("speed", 1.0) or 1.0)
+    vol        = int(status.get("volume", 80) or 80)
+
+    cur_idx      = status.get("current_index", 0) or 0
+    queue        = status.get("queue") or []
+    deck_a_title = (status.get("title") or "NO TRACK").upper()
+    deck_b_title = (queue[cur_idx + 1]["title"]
+                    if cur_idx + 1 < len(queue) else "CUE NEXT").upper()
+
+    bpm       = int((124 + ((cur_idx * 7 + int(pos)) % 16)) * speed)
+    pitch_pct = (speed - 1.0) * 100.0
+    t         = amp_t
+
+    # ── helper: safe addstr ──────────────────────────────────────────────────
+    C_H  = curses.color_pair(1) | curses.A_BOLD   # white bold
+    C_G  = curses.color_pair(2) | curses.A_BOLD   # green bold  (deck A)
+    C_C  = curses.color_pair(3) | curses.A_BOLD   # cyan bold   (mixer)
+    C_Y  = curses.color_pair(5) | curses.A_BOLD   # yellow bold (deck B)
+    C_R  = curses.color_pair(4) | curses.A_BOLD   # red bold    (leds / alert)
+    C_D  = curses.color_pair(6) | curses.A_DIM    # dim
+
+    def put(row: int, col: int, text: str, attr=None) -> None:
+        if row < viz_top or row >= total_h - 1 or col >= aw:
+            return
+        text = text[:max(0, aw - col)]
+        if not text:
+            return
+        try:
+            stdscr.addstr(row, col, text, attr if attr is not None else C_C)
+        except curses.error:
+            pass
+
+    def fill(row: int, ch: str = " ", attr=None) -> None:
+        if row < viz_top or row >= total_h - 1:
+            return
+        try:
+            stdscr.addstr(row, 0, (ch * aw)[:aw], attr if attr is not None else C_D)
+        except curses.error:
+            pass
+
+    # ── animation helpers ────────────────────────────────────────────────────
+    def vu_bar(phase: float, length: int = 8) -> str:
+        v = (math.sin(t * 7.0 + phase) + 1.0) / 2.0 if is_playing else 0.08
+        n = int(v * length)
+        return "▓" * n + "░" * (length - n)
+
+    def waveform(phase_off: float, length: int) -> str:
+        chars = "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁"
+        if not is_playing:
+            return "▂" * length
+        result = []
+        for i in range(length):
+            v  = math.sin(t * 4.2 + i * 0.38 + phase_off) * 0.6
+            v += math.sin(t * 9.1 + i * 0.7  + phase_off) * 0.4
+            result.append(chars[int((v + 1.0) / 2.0 * (len(chars) - 1))])
+        return "".join(result)
+
+    def progress_bar(length: int) -> str:
+        p = min(1.0, pos / max(1, dur))
+        n = int(p * length)
+        return "━" * max(0, n - 1) + ("◆" if n > 0 else "") + "─" * max(0, length - n)
+
+    def fmt_t(s: float) -> str:
+        s = int(s); return f"{s // 60:02d}:{s % 60:02d}"
+
+    PLATTER_FRAMES = [
+        ["  ╭─────╮  ", " ╱ ◜─◝  ╲ ", "│ │  ◈  │ │", " ╲ ◟─◞  ╱ ", "  ╰─────╯  "],
+        ["  ╭─────╮  ", " ╱  ◠─◝ ╲ ", "│ │  ◈  │ │", " ╲  ◡─◞ ╱ ", "  ╰─────╯  "],
+        ["  ╭─────╮  ", " ╱  ─◝◜ ╲ ", "│ │  ◈  │ │", " ╲  ─◞◟ ╱ ", "  ╰─────╯  "],
+        ["  ╭─────╮  ", " ╱  ◝◜─ ╲ ", "│ │  ◈  │ │", " ╲  ◞◟─ ╱ ", "  ╰─────╯  "],
+    ]
+    PLATTER_H = 5
+    PLATTER_W = 12
+
+    spin_frame_a = int(t * 10) % len(PLATTER_FRAMES)
+    spin_frame_b = int(t *  9.7) % len(PLATTER_FRAMES)
+
+    # Layout columns
+    avail   = total_h - viz_top - 1
+    if avail < 6 or aw < 36:
+        fill(viz_top, " ")
+        put(viz_top, 0, f" DJ  A:{deck_a_title[:24]}  ⟺  B:{deck_b_title[:24]}", C_H)
+        return
+
+    deck_w  = max(14, (aw - 12) // 2)
+    mix_w   = aw - 2 * deck_w
+    ax      = 0
+    mx      = deck_w
+    bx      = deck_w + mix_w
+
+    row = viz_top
+
+    # ── clear zone ───────────────────────────────────────────────────────────
+    for r in range(viz_top, total_h - 1):
+        fill(r)
+
+    # ── TOP LED STRIP ────────────────────────────────────────────────────────
+    LED = "◆◇◈●○◉⊙◎"
+    if is_playing:
+        led = "".join(
+            LED[int((math.sin(t * 6 + i * 2 * math.pi / aw) + 1) / 2 * (len(LED) - 1))]
+            for i in range(aw)
+        )
+        put(row, 0, led[:aw], C_G)
+    else:
+        put(row, 0, ("·" * aw)[:aw], C_D)
+    row += 1
+
+    # ── DECK HEADER BOXES ────────────────────────────────────────────────────
+    put(row, ax, ("╔" + "═" * (deck_w - 2) + "╗")[:deck_w], C_H)
+    put(row, mx, ("╔" + "═" * (mix_w  - 2) + "╗")[:mix_w],  C_H)
+    put(row, bx, ("╔" + "═" * (deck_w - 2) + "╗")[:deck_w], C_H)
+    row += 1
+
+    # deck A status line
+    st_a = "▶ PLAYING" if is_playing else "■ PAUSED "
+    st_b = "▶  CUED  "
+    inner = deck_w - 4
+    da_head = f"║ A {st_a:<{inner}} ║"
+    db_head = f"║ B {st_b:<{inner}} ║"
+    mx_head = f"║ {'MIXER':^{mix_w - 4}} ║"
+    put(row, ax, da_head[:deck_w], C_G if is_playing else C_D)
+    put(row, mx, mx_head[:mix_w],  C_C)
+    put(row, bx, db_head[:deck_w], C_Y)
+    row += 1
+
+    # track name
+    ta = deck_a_title[:inner]
+    tb = deck_b_title[:inner]
+    put(row, ax, f"║ ♫ {ta:<{inner}} ║"[:deck_w], C_G if is_playing else C_D)
+    put(row, mx, f"║ {'BPM ' + str(bpm):^{mix_w - 4}} ║"[:mix_w], C_C)
+    put(row, bx, f"║ ♫ {tb:<{inner}} ║"[:deck_w], C_Y)
+    row += 1
+
+    # ── PLATTERS ─────────────────────────────────────────────────────────────
+    pa = PLATTER_FRAMES[spin_frame_a] if is_playing else PLATTER_FRAMES[0]
+    pb = PLATTER_FRAMES[spin_frame_b] if is_playing else PLATTER_FRAMES[0]
+    plat_off_a = max(0, (deck_w - PLATTER_W) // 2)
+    plat_off_b = max(0, (deck_w - PLATTER_W) // 2)
+
+    eq_labels = ["HI ", "MID", "LOW", "VOL", "   "]
+    for pi in range(PLATTER_H):
+        if row >= total_h - 2:
+            break
+        # borders
+        put(row, ax, "║", C_H)
+        put(row, ax + deck_w - 1, "║", C_H)
+        put(row, bx, "║", C_H)
+        put(row, bx + deck_w - 1, "║", C_H)
+        # platter art
+        put(row, ax + plat_off_a, pa[pi][:PLATTER_W], C_G if is_playing else C_D)
+        put(row, bx + plat_off_b, pb[pi][:PLATTER_W], C_Y)
+        # mixer column: EQ knobs + VU
+        eq_lbl = eq_labels[pi] if pi < len(eq_labels) else "   "
+        vu      = vu_bar(pi * 1.1, 6)
+        if pi == 3:  # vol fader
+            gain_n  = int((vol / 130.0) * 8)
+            vu      = "▓" * gain_n + "░" * (8 - gain_n)
+            vu      = vu[:8]
+            mx_line = f"║ {eq_lbl}[{vu}]║"
+        elif pi == 4:  # crossfader
+            xf_n    = int((math.sin(t * 0.25) + 1) / 2 * (mix_w - 8))
+            xf_bar  = "─" * xf_n + "◆" + "─" * max(0, mix_w - 8 - xf_n)
+            mx_line = f"║[{xf_bar[:mix_w - 4]}]║"
+        else:
+            mx_line = f"║ {eq_lbl}[{vu_bar(pi * 1.1, mix_w - 8)[:mix_w - 8]}]║"
+        put(row, mx, mx_line[:mix_w], C_C)
+        row += 1
+
+    # ── WAVEFORM ROW ─────────────────────────────────────────────────────────
+    if row < total_h - 4:
+        ww  = deck_w - 2
+        wfa = waveform(0.0,   ww)
+        wfb = waveform(math.pi, ww)
+        put(row, ax, f"║{wfa[:ww]}║"[:deck_w], C_G)
+        put(row, bx, f"║{wfb[:ww]}║"[:deck_w], C_Y)
+        put(row, mx, f"║{'─' * (mix_w - 2)}║"[:mix_w], C_C)
+        row += 1
+
+    # ── PROGRESS + TIME ───────────────────────────────────────────────────────
+    if row < total_h - 3:
+        pb_w   = deck_w - 12
+        prog   = progress_bar(max(1, pb_w))
+        t_a    = fmt_t(pos)
+        t_d    = fmt_t(dur)
+        put(row, ax, f"║ {t_a} {prog[:pb_w]} {t_d} ║"[:deck_w],    C_G if is_playing else C_D)
+        put(row, bx, f"║  PITCH: {pitch_pct:+.1f}%  CUE READY  ║"[:deck_w], C_Y)
+        put(row, mx, f"║ {'⚡ SYNC':^{mix_w - 4}} ║"[:mix_w], C_C)
+        row += 1
+
+    # ── BOTTOM BORDERS ────────────────────────────────────────────────────────
+    if row < total_h - 2:
+        put(row, ax, ("╚" + "═" * (deck_w - 2) + "╝")[:deck_w], C_H)
+        put(row, mx, ("╚" + "═" * (mix_w  - 2) + "╝")[:mix_w],  C_H)
+        put(row, bx, ("╚" + "═" * (deck_w - 2) + "╝")[:deck_w], C_H)
+        row += 1
+
+    # ── PERFORMANCE PADS ──────────────────────────────────────────────────────
+    if row < total_h - 1:
+        pads    = ["CUE1", "CUE2", "CUE3", "CUE4", "LOOP", "SMPL", "FX-1", "FX-2"]
+        beat    = is_playing and (int(t * bpm / 60) % 2 == 0)
+        pad_str = " ".join(
+            f"[{'◆' if beat and i % 3 == 0 else '·'}{p}]"
+            for i, p in enumerate(pads)
+        )
+        put(row, 0, f" PADS: {pad_str}"[:aw], C_Y if beat else C_D)
+        row += 1
+
+    # ── BOTTOM LED STRIP ──────────────────────────────────────────────────────
+    if row < total_h - 1:
+        if is_playing:
+            bot_led = "".join(
+                LED[int((math.sin(t * 8 + i * 2 * math.pi / aw + math.pi) + 1) / 2 * (len(LED) - 1))]
+                for i in range(aw)
+            )
+            put(row, 0, bot_led[:aw], C_R)
+        else:
+            put(row, 0, ("·" * aw)[:aw], C_D)
+
+
+
+
+
 def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
-              viz_top: int = 4, viz_h: int = 4) -> None:
+              viz_top: int = 4, viz_h: int = 4, total_h: int = 0) -> None:
     """Multi-row animated Hi-Fi equalizer / oscilloscope visualizer.
 
     Modes:
@@ -1090,6 +1418,10 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
       - 'bars':     Continuous dense liquid-mercury sound wave
     """
     if viz_h <= 0 or w < 4:
+        return
+
+    if status.get("dj_mode"):
+        _draw_dj_deck_tui(stdscr, status, amp_t, w, viz_top, total_h or viz_top + viz_h)
         return
 
     mode = ui.get("viz_mode") or _visualizer()
@@ -1570,7 +1902,7 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     # ── Row 0: brand bar ─────────────────────────────────────────────────
     # Left: logo + state.  Right: state badge right-aligned.
     left0  = f" ♪  Skye Player"
-    right0 = f" {mark} {label} "
+    right0 = f" 🎧⚡ DJ MODE · {mark} {label} " if status.get("dj_mode") else f" {mark} {label} "
     pad0   = max(0, W - len(left0) - len(right0))
     try:
         stdscr.addstr(0, 0, (left0 + " " * pad0 + right0)[:W],
@@ -1632,6 +1964,8 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
         meta += f"  🎧 {mood}"
     if status.get("smart_queue"):
         meta += "  ⚡ smart"
+    if status.get("dj_mode"):
+        meta += "  🎧⚡ DJ MODE"
     err = status.get("error")
     if err:
         meta += f"  ✖ {err}"

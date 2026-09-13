@@ -27,6 +27,7 @@ export type Status = {
   mood_lang: string | null
   mood_artist: string | null
   smart_queue: boolean
+  dj_mode?: boolean
 }
 
 export class PinRequired extends Error {}
@@ -34,15 +35,33 @@ export class PinRequired extends Error {}
 let pin = ""
 export function setPin(value: string) {
   pin = value
-  localStorage.setItem("tune_pin", value)
+  try {
+    localStorage.setItem("tune_pin", value)
+  } catch (e) {}
 }
 export function loadPin(): string {
-  pin = localStorage.getItem("tune_pin") || ""
+  if (typeof window !== "undefined") {
+    const params = new URLSearchParams(window.location.search)
+    const urlToken = params.get("pin") || params.get("token") || ""
+    if (urlToken) {
+      pin = urlToken
+      try {
+        localStorage.setItem("tune_pin", urlToken)
+      } catch (e) {}
+      return urlToken
+    }
+  }
+  try {
+    pin = localStorage.getItem("tune_pin") || ""
+  } catch (e) {
+    pin = ""
+  }
   return pin
 }
 
 export async function api<T>(verb: string, arg = ""): Promise<T> {
-  let url = `/api/${verb}?pin=${encodeURIComponent(pin)}`
+  const currentPin = pin || loadPin()
+  let url = `/api/${verb}?pin=${encodeURIComponent(currentPin)}`
   if (arg) url += `&arg=${encodeURIComponent(arg)}`
   const r = await fetch(url)
   if (r.status === 401) throw new PinRequired()

@@ -198,6 +198,7 @@ class TestDaemonHandlers(unittest.TestCase):
         self.assertEqual(resp["data"]["suggestions"], ["Coldplay Yellow"])
 
     def test_bookmark_saves_and_lists(self):
+        self.d._bookmarks = []
         self.d.q.tracks = [T("u1", "Song")]
         self.d.q.index = 0
         self.d._last_pos = 90.0
@@ -322,6 +323,27 @@ class TestDaemonHandlers(unittest.TestCase):
         self.d._record_signal("u1", "skip")
         self.assertEqual(self.d._history[0]["skips"], 1)
 
+    def test_quit_stops_and_sets_idle(self):
+        resp = self.d._h_quit("")
+        self.assertTrue(resp["ok"])
+        self.assertTrue(self.d._stop.is_set())
+        self.assertEqual(self.d._state, "idle")
+
+
+    def test_dj_mode_toggle(self):
+        resp_on = self.d._h_dj("")
+        self.assertTrue(resp_on["ok"])
+        self.assertTrue(self.d._dj_mode)
+        resp_off = self.d._h_dj("off")
+        self.assertTrue(resp_off["ok"])
+        self.assertFalse(self.d._dj_mode)
+
+    def test_dj_scratch_fx(self):
+        resp_fx = self.d._h_dj("scratch")
+        self.assertTrue(resp_fx["ok"])
+        self.assertEqual(resp_fx["data"]["fx"], "scratch")
+
 
 if __name__ == "__main__":
     unittest.main()
+
