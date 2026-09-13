@@ -41,7 +41,7 @@ h1{margin:0;font-size:30px;font-weight:800;letter-spacing:-.03em;
 .sub{color:var(--muted);font-size:13px;margin:2px 0 18px;font-weight:500}
 .card{background:var(--card);border-radius:24px;box-shadow:var(--shadow);padding:18px;margin-bottom:16px}
 #now{display:flex;gap:14px;align-items:center}
-#art{width:78px;height:78px;object-fit:cover;border-radius:18px;flex:none;background:#f0e9e2}
+#art{width:78px;height:78px;object-fit:cover;border-radius:18px;flex:none;background:#f0e9e2;display:none}
 #ti{font-size:16px;font-weight:700;line-height:1.25}
 #st{font-size:13px;color:var(--muted);margin-top:3px}
 #seekbar{display:flex;gap:10px;align-items:center;margin-top:16px}
@@ -72,10 +72,11 @@ h3{margin:22px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:
 .qrow .cur{color:var(--lav);font-weight:700}
 .qrow button{font-size:13px;padding:6px 9px;margin:0 2px;border:0;border-radius:10px;cursor:pointer;
   background:#f3edf9;color:var(--ink)}
-#qq{border:0;background:var(--card);box-shadow:var(--shadow);border-radius:18px;padding:15px 18px;
-  font-size:15px;width:100%;color:var(--ink);outline:none}
-#r div{margin:8px 0;padding:13px 15px;background:var(--card);border-radius:16px;box-shadow:var(--shadow)}
-#r a{color:#8b7bd6;text-decoration:none;font-weight:600}
+#searchbox{display:flex;gap:8px;margin-bottom:12px}
+#qq{border:0;background:var(--card);box-shadow:var(--shadow);border-radius:18px;padding:14px 18px;
+  font-size:15px;flex:1;color:var(--ink);outline:none}
+#sbtn{border:0;background:linear-gradient(135deg,var(--lav),var(--pink));color:#fff;border-radius:18px;
+  padding:0 20px;font-weight:700;font-size:14px;cursor:pointer;box-shadow:var(--shadow)}
 #pinoverlay{position:fixed;inset:0;background:rgba(74,68,80,.35);backdrop-filter:blur(5px);
   display:none;align-items:center;justify-content:center;padding:24px}
 #pinbox{background:#fff;border-radius:24px;box-shadow:0 14px 50px rgba(74,68,80,.3);
@@ -139,12 +140,18 @@ h3{margin:22px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:
 </div>
 
 <h3>Queue</h3><div id=q></div>
-<h3>Search</h3><input id=qq placeholder='type a song name' onkeydown="if(event.key==='Enter')search()">
+<h3>Search</h3>
+<div id=searchbox>
+  <input id=qq placeholder='search song or artist…' onkeydown="if(event.key==='Enter')search()">
+  <button id=sbtn onclick="search()">Search</button>
+</div>
 <div id=r></div>
 </div>
+
 <div id=pinoverlay><div id=pinbox><b>🔐 PIN required</b><br><br>
 <input id=p pinmode autocomplete=off placeholder='enter PIN' onkeydown="if(event.key==='Enter')savePin()"><br><br>
 <button onclick="savePin()">Unlock</button></div></div>
+
 <script>
 let pin=localStorage.getItem('tune_pin')||'';
 let spkActive=false;
@@ -153,6 +160,7 @@ let nodeId='node_'+Math.random().toString(36).substring(2,9);
 let channelMode='stereo';
 let nodeVolume=100;
 let audioCtx=null, mediaSrcNode=null, pannerNode=null, gainNode=null;
+let refreshing=false;
 
 function initWebAudio(audioEl){
   if(audioCtx) return;
@@ -201,7 +209,8 @@ function setChannel(mode){
 
 function setSpkVol(v){
   nodeVolume = parseInt(v);
-  document.getElementById('spkvolval').textContent = v + '%';
+  const vEl = document.getElementById('spkvolval');
+  if(vEl) vEl.textContent = v + '%';
   applyAudioRouting();
   sendHeartbeat();
 }
@@ -215,21 +224,27 @@ function toggleSpeaker(){
   if(spkActive){
     initWebAudio(audio);
     if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-    btn.textContent='🔊 Phone Speaker ON';
-    btn.style.background='linear-gradient(135deg,var(--lav),var(--pink))';
-    btn.style.color='#fff';
-    resyncBtn.style.display='inline-block';
-    ctrlBox.style.display='block';
+    if(btn){
+      btn.textContent='🔊 Phone Speaker ON';
+      btn.style.background='linear-gradient(135deg,var(--lav),var(--pink))';
+      btn.style.color='#fff';
+    }
+    if(resyncBtn) resyncBtn.style.display='inline-block';
+    if(ctrlBox) ctrlBox.style.display='block';
     refresh(true);
     sendHeartbeat();
   }else{
-    btn.textContent='📻 Phone Speaker OFF';
-    btn.style.background='var(--card)';
-    btn.style.color='var(--ink)';
-    resyncBtn.style.display='none';
-    ctrlBox.style.display='none';
-    audio.pause();
-    audio.src='';
+    if(btn){
+      btn.textContent='📻 Phone Speaker OFF';
+      btn.style.background='var(--card)';
+      btn.style.color='var(--ink)';
+    }
+    if(resyncBtn) resyncBtn.style.display='none';
+    if(ctrlBox) ctrlBox.style.display='none';
+    if(audio){
+      audio.pause();
+      audio.src='';
+    }
     spkTrackUrl='';
   }
 }
@@ -256,8 +271,20 @@ async function sendHeartbeat(){
   }catch(e){}
 }
 
-function qs(v,a){let u='/api/'+v+'?pin='+encodeURIComponent(pin);if(a)u+='&arg='+encodeURIComponent(a);return u}
-async function c(v,a){try{const r=await fetch(qs(v,a));if(r.status===401){askPin();return}await refresh()}catch(e){}}
+function qs(v,a){
+  let u='/api/'+v+'?pin='+encodeURIComponent(pin);
+  if(a!==undefined&&a!==null&&a!=='') u+='&arg='+encodeURIComponent(a);
+  return u;
+}
+
+async function c(v,a){
+  try{
+    const r=await fetch(qs(v,a));
+    if(r.status===401){askPin();return;}
+    await refresh(true);
+  }catch(e){}
+}
+
 function vid(u){const m=(u||'').match(/[?&]v=([\\w-]{11})/);return m?m[1]:''}
 const fmt=s=>{s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
 
@@ -278,15 +305,18 @@ async function loadDevices(){
     const cur=d.current||'';
     const html=devs.map(dev=>{
       const isCur = (dev.name === cur);
-      const isBt = dev.description.toLowerCase().includes('bluetooth') || dev.description.toLowerCase().includes('airpods') || dev.name.toLowerCase().includes('blue');
+      const desc = dev.description || dev.name;
+      const isBt = desc.toLowerCase().includes('bluetooth') || desc.toLowerCase().includes('airpods') || dev.name.toLowerCase().includes('blue');
       const icon = isBt ? '📶' : '🔊';
       const badge = isCur ? ' <span style="color:var(--lav);font-weight:700">● Active</span>' : '';
+      const devEsc = (dev.name||'').replace(/'/g, "\\'");
       return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0e9f2">
-        <span style="font-size:14px">${icon} ${dev.description}${badge}</span>
-        ${isCur ? '' : `<button onclick="switchDevice('${dev.name.replace(/'/g, "\\'")}')" style="font-size:12px;padding:5px 10px;border-radius:10px;border:0;background:#efe5f7;cursor:pointer">Connect</button>`}
+        <span style="font-size:14px">${icon} ${desc}${badge}</span>
+        ${isCur ? '' : `<button onclick="switchDevice('${devEsc}')" style="font-size:12px;padding:5px 10px;border-radius:10px;border:0;background:#efe5f7;cursor:pointer">Connect</button>`}
       </div>`;
     }).join('');
-    document.getElementById('devlist').innerHTML = html || '<div style="font-size:13px;color:var(--muted)">No devices found</div>';
+    const dEl = document.getElementById('devlist');
+    if(dEl) dEl.innerHTML = html || '<div style="font-size:13px;color:var(--muted)">No devices found</div>';
   }catch(e){}
 }
 
@@ -296,8 +326,10 @@ async function loadMatrix(){
     if(!r.ok) return;
     const j=await r.json();
     const nodes=(j.data&&j.data.nodes)||[];
+    const mEl = document.getElementById('matrix');
+    if(!mEl) return;
     if(!nodes.length){
-      document.getElementById('matrix').innerHTML='<div style="font-size:13px;color:var(--muted)">No secondary phone speakers connected yet. Tap \'Phone Speaker ON\' above to join this device.</div>';
+      mEl.innerHTML='<div style="font-size:13px;color:var(--muted)">No secondary phone speakers connected yet. Tap \'Phone Speaker ON\' above to join this device.</div>';
       return;
     }
     const html=nodes.map(n=>{
@@ -311,69 +343,169 @@ async function loadMatrix(){
         <span style="font-size:12px;color:#6bc598;font-weight:700">● Synced</span>
       </div>`;
     }).join('');
-    document.getElementById('matrix').innerHTML = html;
+    mEl.innerHTML = html;
   }catch(e){}
 }
 
-async function refresh(force){try{
- const r=await fetch(qs('status'));if(r.status===401){askPin();return}
- const j=await r.json();const d=j.data||{};
- document.getElementById('ti').textContent=d.title||'nothing playing';
- document.getElementById('st').textContent=(d.state||'')+' · '+(d.speed&&d.speed!=1?d.speed+'× ':'')+(d.queue_len||0)+' queued';
- const v=vid(d.url);document.getElementById('art').src=v?('https://i.ytimg.com/vi/'+v+'/hqdefault.jpg'):'';
- document.getElementById('pp').textContent=(d.state==='playing'||d.state==='loading')?'⏸':'▶';
- const fb=document.getElementById('favbtn');fb.textContent=d.fav?'♥':'♡';fb.className=d.fav?'on':'';
- const dur=d.duration||0;
- const seek=document.getElementById('seek');
- seek.max=Math.max(1,Math.round(dur));
- document.getElementById('tdur').textContent=fmt(dur);
- if(!seek.__drag){ seek.value=Math.min((d.position||0),seek.max); document.getElementById('tcur').textContent=fmt(seek.value); }
+async function refresh(force){
+  if(refreshing && !force) return;
+  refreshing = true;
+  try{
+    const r=await fetch(qs('status'));
+    if(r.status===401){askPin();return;}
+    if(!r.ok) return;
+    const j=await r.json();
+    const d=j.data||{};
 
- if(spkActive){
-   const audio=document.getElementById('spkaudio');
-   const targetUrl=d.direct_url||(d.url?'/api/stream_proxy?pin='+encodeURIComponent(pin)+'&url='+encodeURIComponent(d.url):'');
-   if(targetUrl&&(spkTrackUrl!==d.url||force)){
-     spkTrackUrl=d.url;
-     audio.src=targetUrl;
-     if(d.position) audio.currentTime=d.position;
-     if(d.state==='playing') audio.play().catch(e=>{});
-   }
-   if(d.state==='playing'&&audio.paused&&audio.src){
-     audio.play().catch(e=>{});
-   }else if(d.state!=='playing'&&!audio.paused){
-     audio.pause();
-   }
-   if(!audio.paused&&d.position&&Math.abs(audio.currentTime-d.position)>1.2){
-     audio.currentTime=d.position;
-   }
-   sendHeartbeat();
- }
+    const tiEl = document.getElementById('ti');
+    if(tiEl) tiEl.textContent = d.title || 'nothing playing';
 
- const rows=(d.queue||[]).map((t,i)=>{
-   const cur=(i===d.current_index)?'<span class=cur>▶</span> ':'';
-   const label=cur+'<span class=t>'+t.title+'</span>';
-   const up=(i>0)?`<button onclick="c('move','${i} ${i-1}')">▲</button>`:'';
-   const dn=(i<d.queue_len-1)?`<button onclick="c('move','${i+2} ${i+1}')">▼</button>`:'';
-   return `<div class=qrow>${label}<span style="flex:none">${up}${dn}<button onclick="c('remove','${i+1}')">✕</button></span></div>`;
- }).join('');
- document.getElementById('q').innerHTML=rows||'<div class=qrow>queue is empty</div>';
-}catch(e){}}
-(function(){const s=document.getElementById('seek');
- s.addEventListener('input',()=>{s.__drag=true;document.getElementById('tcur').textContent=fmt(s.value);});
- s.addEventListener('change',()=>{s.__drag=false;c('seek',Math.round(s.value));});
+    const stEl = document.getElementById('st');
+    if(stEl) {
+      const parts = [];
+      if(d.state) parts.push(d.state);
+      if(d.channel) parts.push(d.channel);
+      if(d.speed && d.speed !== 1) parts.push(d.speed + '×');
+      parts.push((d.queue_len || 0) + ' queued');
+      stEl.textContent = parts.join(' · ');
+    }
+
+    const artEl = document.getElementById('art');
+    if(artEl) {
+      const v = vid(d.url);
+      if(v){
+        artEl.src = 'https://i.ytimg.com/vi/' + v + '/hqdefault.jpg';
+        artEl.style.display = 'block';
+      }else{
+        artEl.style.display = 'none';
+      }
+    }
+
+    const ppEl = document.getElementById('pp');
+    if(ppEl) ppEl.textContent = (d.state==='playing'||d.state==='loading') ? '⏸' : '▶';
+
+    const fbEl = document.getElementById('favbtn');
+    if(fbEl){
+      fbEl.textContent = d.fav ? '♥' : '♡';
+      fbEl.className = d.fav ? 'on' : '';
+    }
+
+    const dur = d.duration || 0;
+    const seek = document.getElementById('seek');
+    if(seek){
+      seek.max = Math.max(1, Math.round(dur));
+      if(!seek.__drag){
+        seek.value = Math.min((d.position || 0), seek.max);
+        const tcur = document.getElementById('tcur');
+        if(tcur) tcur.textContent = fmt(seek.value);
+      }
+    }
+    const tdur = document.getElementById('tdur');
+    if(tdur) tdur.textContent = fmt(dur);
+
+    if(spkActive){
+      const audio = document.getElementById('spkaudio');
+      if(audio){
+        const targetUrl = d.direct_url || (d.url ? '/api/stream_proxy?pin=' + encodeURIComponent(pin) + '&url=' + encodeURIComponent(d.url) : '');
+        if(targetUrl && (spkTrackUrl !== d.url || force)){
+          spkTrackUrl = d.url;
+          audio.src = targetUrl;
+          if(d.position) audio.currentTime = d.position;
+          if(d.state==='playing') audio.play().catch(e => {});
+        }
+        if(d.state==='playing' && audio.paused && audio.src){
+          audio.play().catch(e => {});
+        }else if(d.state!=='playing' && !audio.paused){
+          audio.pause();
+        }
+        if(!audio.paused && d.position && Math.abs(audio.currentTime - d.position) > 1.5){
+          audio.currentTime = d.position;
+        }
+      }
+      sendHeartbeat();
+    }
+
+    const qEl = document.getElementById('q');
+    if(qEl){
+      const rows = (d.queue || []).map((t, i) => {
+        const cur = (i === d.current_index) ? '<span class=cur>▶</span> ' : '';
+        const label = cur + '<span class=t>' + (t.title || 'Track') + '</span>';
+        const up = (i > 0) ? `<button onclick="c('move','${i} ${i-1}')">▲</button>` : '';
+        const dn = (i < d.queue_len - 1) ? `<button onclick="c('move','${i+2} ${i+1}')">▼</button>` : '';
+        return `<div class=qrow>${label}<span style="flex:none">${up}${dn}<button onclick="c('remove','${i+1}')">✕</button></span></div>`;
+      }).join('');
+      qEl.innerHTML = rows || '<div class=qrow style="color:var(--muted)">queue is empty</div>';
+    }
+  }catch(e){
+  }finally{
+    refreshing = false;
+  }
+}
+
+(function(){
+  const s=document.getElementById('seek');
+  if(s){
+    s.addEventListener('input',()=>{s.__drag=true;const tc=document.getElementById('tcur');if(tc)tc.textContent=fmt(s.value);});
+    s.addEventListener('change',()=>{s.__drag=false;c('seek',Math.round(s.value));});
+  }
 })();
-async function search(){const q=document.getElementById('qq').value;
- const r=await fetch(qs('search',q));if(r.status===401){askPin();return}
- const j=await r.json();const rs=(j.data&&j.data.results)||[];window._tr=rs;
- document.getElementById('r').innerHTML=rs.map((t,i)=>
- `<div><a href="javascript:c('play',window._tr[${i}].url)">▶ ${t.title}</a></div>`).join('')||'<div>no results</div>';}
-function askPin(){document.getElementById('pinoverlay').style.display='flex';document.getElementById('p').focus()}
-function savePin(){pin=document.getElementById('p').value;localStorage.setItem('tune_pin',pin);
- document.getElementById('pinoverlay').style.display='none';refresh()}
-refresh();loadDevices();loadMatrix();
-setInterval(refresh,150);
-setInterval(loadDevices,3000);
-setInterval(loadMatrix,1500);
+
+async function search(){
+  const qEl = document.getElementById('qq');
+  const q = qEl ? qEl.value.trim() : '';
+  if(!q) return;
+  const resEl = document.getElementById('r');
+  if(resEl) resEl.innerHTML = '<div style="padding:12px;color:var(--muted)">Searching YouTube…</div>';
+  try{
+    const r=await fetch(qs('search', q));
+    if(r.status===401){askPin();return;}
+    const j=await r.json();
+    const rs=(j.data && j.data.results) || [];
+    if(!rs.length){
+      if(resEl) resEl.innerHTML = '<div style="padding:12px;color:var(--muted)">No results found</div>';
+      return;
+    }
+    const html = rs.map((t, i) => {
+      const urlEsc = (t.url || '').replace(/'/g, "\\'");
+      const ch = t.channel ? `<div style="font-size:12px;color:var(--muted);margin-top:2px">${t.channel}</div>` : '';
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;margin:8px 0;background:var(--card);border-radius:16px;box-shadow:var(--shadow)">
+        <div style="flex:1;overflow:hidden;margin-right:12px" onclick="playUrl('${urlEsc}')">
+          <div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.title}</div>
+          ${ch}
+        </div>
+        <button onclick="playUrl('${urlEsc}')" style="border:0;background:linear-gradient(135deg,var(--lav),var(--pink));color:#fff;border-radius:12px;padding:7px 14px;font-weight:700;font-size:13px;cursor:pointer;flex:none">▶ Play</button>
+      </div>`;
+    }).join('');
+    if(resEl) resEl.innerHTML = html;
+  }catch(e){
+    if(resEl) resEl.innerHTML = '<div style="padding:12px;color:#e55">Search error</div>';
+  }
+}
+
+function playUrl(url){
+  if(url) c('play', url);
+}
+
+function askPin(){
+  const p=document.getElementById('pinoverlay');if(p)p.style.display='flex';
+  const pi=document.getElementById('p');if(pi)pi.focus();
+}
+
+function savePin(){
+  const pi=document.getElementById('p');
+  if(pi) pin=pi.value;
+  localStorage.setItem('tune_pin',pin);
+  const p=document.getElementById('pinoverlay');if(p)p.style.display='none';
+  refresh(true);
+}
+
+refresh();
+loadDevices();
+loadMatrix();
+
+setInterval(refresh, 500);
+setInterval(loadDevices, 4000);
+setInterval(loadMatrix, 2000);
 
 </script></body></html>"""
 
