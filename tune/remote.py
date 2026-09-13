@@ -20,116 +20,249 @@ if TYPE_CHECKING:
 
 PAGE = """<!doctype html><html><head><meta charset=utf8>
 <meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>
-<title>tune</title>
+<title>tune · Tidal Player</title>
 <style>
-:root{
-  --bg:#faf6f0; --card:#ffffff; --ink:#4a4450; --muted:#a79eb3;
-  --lav:#b9a6f2; --pink:#f6b9cd; --peach:#ffd9b8; --mint:#b7e8d4;
-  --sky:#aecbfa; --shadow:0 8px 24px rgba(140,120,170,.12);
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --border: #e4e6eb;
+  --ink: #111827;
+  --muted: #6b7280;
+  --accent: #009bb3;
+  --accent-light: rgba(0, 155, 179, 0.1);
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
 }
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  color:var(--ink);min-height:100vh;padding:28px 18px 44px;
-  background:radial-gradient(120% 90% at 85% -10%, #fdf0f2 0%, transparent 55%),
-             radial-gradient(120% 90% at -15% 0%, #eef2fd 0%, transparent 55%),
-             var(--bg);}
-.wrap{max-width:560px;margin:0 auto}
-h1{margin:0;font-size:30px;font-weight:800;letter-spacing:-.03em;
-  background:linear-gradient(92deg,var(--lav),var(--pink) 55%,var(--peach));
-  -webkit-background-clip:text;background-clip:text;color:transparent}
-.sub{color:var(--muted);font-size:13px;margin:2px 0 18px;font-weight:500}
-.card{background:var(--card);border-radius:24px;box-shadow:var(--shadow);padding:18px;margin-bottom:16px}
-#now{display:flex;gap:14px;align-items:center}
-#art{width:78px;height:78px;object-fit:cover;border-radius:18px;flex:none;background:#f0e9f2;display:none}
-#ti{font-size:16px;font-weight:700;line-height:1.25}
-#st{font-size:13px;color:var(--muted);margin-top:3px}
-#seekbar{display:flex;gap:10px;align-items:center;margin-top:16px}
-#seekbar span{font-size:12px;color:var(--muted);min-width:34px;font-variant-numeric:tabular-nums}
-#seekbar span:last-child{text-align:right}
-#seek{flex:1;height:8px;border-radius:99px;appearance:none;-webkit-appearance:none;
-  background:linear-gradient(90deg,var(--lav),var(--pink));outline:none;cursor:pointer;margin:0}
-#seek::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;
-  background:#fff;border:3px solid var(--lav);box-shadow:0 2px 8px rgba(140,120,170,.3)}
-#seek::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#fff;
-  border:3px solid var(--lav)}
-.transport{display:flex;justify-content:center;gap:16px;margin-top:18px}
-.transport button{width:58px;height:58px;border-radius:50%;border:0;font-size:22px;cursor:pointer;
-  background:var(--card);box-shadow:var(--shadow);color:var(--ink);
-  transition:transform .12s ease}
-.transport button:active{transform:scale(.9)}
-#pp{background:linear-gradient(135deg,var(--lav),var(--sky));color:#fff;box-shadow:0 8px 20px rgba(150,130,240,.35)}
-.ic{display:flex;justify-content:center;gap:12px;margin-top:14px}
-.ic button{border:0;border-radius:16px;padding:10px 16px;font-size:15px;cursor:pointer;
-  background:var(--card);box-shadow:var(--shadow);color:var(--ink);transition:transform .12s ease}
-.ic button:active{transform:scale(.94)}
-#favbtn.on{color:#ff8fb2}
-h3{margin:22px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:var(--muted);
-  text-transform:uppercase}
-.qrow{display:flex;gap:8px;align-items:center;background:var(--card);border-radius:16px;
-  box-shadow:var(--shadow);padding:11px 13px;margin:8px 0}
-.qrow .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
-.qrow .cur{color:var(--lav);font-weight:700}
-.qrow button{font-size:13px;padding:6px 9px;margin:0 2px;border:0;border-radius:10px;cursor:pointer;
-  background:#f3edf9;color:var(--ink)}
-#searchbox{display:flex;gap:8px;margin-bottom:12px}
-#qq{border:0;background:var(--card);box-shadow:var(--shadow);border-radius:18px;padding:14px 18px;
-  font-size:15px;flex:1;color:var(--ink);outline:none}
-#sbtn{border:0;background:linear-gradient(135deg,var(--lav),var(--pink));color:#fff;border-radius:18px;
-  padding:0 20px;font-weight:700;font-size:14px;cursor:pointer;box-shadow:var(--shadow)}
-#pinoverlay{position:fixed;inset:0;background:rgba(74,68,80,.35);backdrop-filter:blur(5px);
-  display:none;align-items:center;justify-content:center;padding:24px}
-#pinbox{background:#fff;border-radius:24px;box-shadow:0 14px 50px rgba(74,68,80,.3);
-  padding:26px;max-width:320px;width:100%}
-#pinbox b{font-size:17px}
-#pinbox input{width:100%;margin-top:14px;border:2px solid #efe7f7;border-radius:14px;padding:13px 15px;
-  font-size:15px;color:var(--ink);outline:none}
-#pinbox input:focus{border-color:var(--lav)}
-#pinbox button{border:0;width:100%;margin-top:14px;border-radius:14px;padding:13px;font-size:15px;
-  font-weight:700;cursor:pointer;color:#fff;
-  background:linear-gradient(135deg,var(--lav),var(--pink))}
-</style></head><body>
-<div class=wrap>
-<h1>tune</h1>
-<div class=sub>now playing · queue · search</div>
-<div class=card>
-  <div id=now><img id=art><div><div id=ti>—</div><div id=st></div></div></div>
-  <div id=seekbar>
-    <span id=tcur>0:00</span>
-    <input id=seek type=range min=0 max=0 value=0>
-    <span id=tdur>0:00</span>
+html.dark {
+  --bg: #0b0e14;
+  --card: #151a21;
+  --border: #222933;
+  --ink: #f3f4f6;
+  --muted: #9ca3af;
+  --accent: #00e5ff;
+  --accent-light: rgba(0, 229, 255, 0.12);
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+  min-height: 100vh;
+  padding: 24px 16px 48px;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+.wrap { max-width: 580px; margin: 0 auto; }
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 20px;
+}
+.logo-box { display: flex; align-items: center; gap: 10px; }
+.logo {
+  font-size: 22px; font-weight: 900; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink);
+}
+.badge {
+  font-size: 10px; font-weight: 800; letter-spacing: 0.08em;
+  background: var(--accent-light); color: var(--accent);
+  padding: 3px 8px; border-radius: 6px; border: 1px solid var(--accent);
+  text-transform: uppercase;
+}
+.theme-btn {
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--ink); font-size: 13px; font-weight: 600;
+  padding: 8px 14px; border-radius: 20px; cursor: pointer;
+  box-shadow: var(--shadow); transition: all 0.2s ease;
+}
+.theme-btn:active { transform: scale(0.95); }
+
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 20px; box-shadow: var(--shadow);
+  padding: 20px; margin-bottom: 20px; transition: background 0.25s ease;
+}
+
+#now { display: flex; gap: 16px; align-items: center; }
+#art {
+  width: 88px; height: 88px; object-fit: cover; border-radius: 14px;
+  flex: none; background: var(--border); display: none;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.1);
+}
+.track-info { flex: 1; overflow: hidden; }
+#ti {
+  font-size: 17px; font-weight: 700; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#st { font-size: 13px; color: var(--muted); margin-top: 4px; font-weight: 500; }
+
+#seekbar { display: flex; gap: 12px; align-items: center; margin-top: 20px; }
+#seekbar span { font-size: 12px; color: var(--muted); min-width: 38px; font-variant-numeric: tabular-nums; font-weight: 600; }
+#seekbar span:last-child { text-align: right; }
+#seek {
+  flex: 1; height: 6px; border-radius: 99px; appearance: none; -webkit-appearance: none;
+  background: var(--border); outline: none; cursor: pointer; margin: 0;
+}
+#seek::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--card); box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+
+.transport { display: flex; justify-content: center; align-items: center; gap: 20px; margin-top: 22px; }
+.transport button {
+  width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--border);
+  font-size: 20px; cursor: pointer; background: var(--card); color: var(--ink);
+  box-shadow: var(--shadow); transition: transform 0.12s ease, background 0.2s ease;
+  display: flex; align-items: center; justify-content: center;
+}
+.transport button:active { transform: scale(0.92); }
+#pp {
+  width: 62px; height: 62px; font-size: 26px;
+  background: var(--accent); color: #ffffff; border: 0;
+  box-shadow: 0 6px 20px var(--accent-light);
+}
+html.dark #pp { color: #000000; }
+
+.ic { display: flex; justify-content: center; gap: 10px; margin-top: 16px; }
+.ic button {
+  border: 1px solid var(--border); border-radius: 14px; padding: 10px 18px;
+  font-size: 14px; font-weight: 600; cursor: pointer; background: var(--card);
+  color: var(--ink); box-shadow: var(--shadow); transition: transform 0.12s ease;
+}
+.ic button:active { transform: scale(0.95); }
+#favbtn.on { color: #ff3b30; border-color: #ff3b30; }
+
+h3 {
+  margin: 26px 0 12px; font-size: 13px; font-weight: 800; letter-spacing: 0.08em;
+  color: var(--muted); text-transform: uppercase;
+}
+
+.qrow {
+  display: flex; gap: 10px; align-items: center; background: var(--card);
+  border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: var(--shadow); padding: 12px 14px; margin: 8px 0;
+}
+.qrow .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.qrow .cur { color: var(--accent); font-weight: 800; }
+.qrow button {
+  font-size: 13px; padding: 6px 10px; margin: 0 2px; border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; background: var(--bg); color: var(--ink);
+}
+
+#searchbox { display: flex; gap: 10px; margin-bottom: 14px; }
+#qq {
+  border: 1px solid var(--border); background: var(--card); border-radius: 14px;
+  padding: 14px 18px; font-size: 15px; flex: 1; color: var(--ink); outline: none;
+  box-shadow: var(--shadow);
+}
+#sbtn {
+  border: 0; background: var(--accent); color: #ffffff; border-radius: 14px;
+  padding: 0 22px; font-weight: 700; font-size: 14px; cursor: pointer;
+  box-shadow: var(--shadow);
+}
+html.dark #sbtn { color: #000000; }
+
+#pinoverlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(8px);
+  display: none; align-items: center; justify-content: center; padding: 24px; z-index: 999;
+}
+#pinbox {
+  background: var(--card); border: 1px solid var(--border); border-radius: 20px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.3); padding: 28px; max-width: 320px; width: 100%;
+}
+#pinbox b { font-size: 18px; color: var(--ink); }
+#pinbox input {
+  width: 100%; margin-top: 16px; border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px; font-size: 15px; color: var(--ink); background: var(--bg); outline: none;
+}
+#pinbox button {
+  border: 0; width: 100%; margin-top: 16px; border-radius: 12px; padding: 14px;
+  font-size: 15px; font-weight: 700; cursor: pointer; color: #ffffff; background: var(--accent);
+}
+html.dark #pinbox button { color: #000000; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div class="logo-box">
+      <div class="logo">T I D A L</div>
+      <div class="badge">HI-RES AUDIO</div>
+    </div>
+    <button id="themebtn" class="theme-btn" onclick="toggleTheme()">🌙 Dark Mode</button>
   </div>
-  <div class=transport>
-    <button onclick="c('prev')">⏮</button>
-    <button id=pp onclick="c('toggle')">⏸</button>
-    <button onclick="c('next')">⏭</button>
+
+  <div class="card">
+    <div id="now">
+      <img id="art">
+      <div class="track-info">
+        <div id="ti">—</div>
+        <div id="st"></div>
+      </div>
+    </div>
+    <div id="seekbar">
+      <span id="tcur">0:00</span>
+      <input id="seek" type="range" min="0" max="0" value="0">
+      <span id="tdur">0:00</span>
+    </div>
+    <div class="transport">
+      <button onclick="c('prev')">⏮</button>
+      <button id="pp" onclick="c('toggle')">⏸</button>
+      <button onclick="c('next')">⏭</button>
+    </div>
+    <div class="ic">
+      <button onclick="c('volume','-5')">🔉−</button>
+      <button onclick="c('volume','+5')">🔊+</button>
+      <button id="favbtn" onclick="c('fav')">♡</button>
+    </div>
+    <div class="ic" style="margin-top:12px">
+      <button id="spkbtn" onclick="toggleSpeaker()">📻 Phone Speaker OFF</button>
+    </div>
+    <audio id="spkaudio" style="display:none" playsinline></audio>
   </div>
-  <div class=ic>
-    <button onclick="c('volume','-5')">🔉−</button>
-    <button onclick="c('volume','+5')">🔊+</button>
-    <button id=favbtn onclick="c('fav')">♡</button>
+
+  <h3>Queue</h3>
+  <div id="q"></div>
+
+  <h3>Search</h3>
+  <div id="searchbox">
+    <input id="qq" placeholder="search song or artist…" onkeydown="if(event.key==='Enter')search()">
+    <button id="sbtn" onclick="search()">Search</button>
   </div>
-  <div class=ic style="margin-top:10px">
-    <button id=spkbtn onclick="toggleSpeaker()">📻 Phone Speaker OFF</button>
-  </div>
-  <audio id=spkaudio style="display:none" playsinline></audio>
+  <div id="r"></div>
 </div>
-<h3>Queue</h3><div id=q></div>
-<h3>Search</h3>
-<div id=searchbox>
-  <input id=qq placeholder='search song or artist…' onkeydown="if(event.key==='Enter')search()">
-  <button id=sbtn onclick="search()">Search</button>
+
+<div id="pinoverlay">
+  <div id="pinbox">
+    <b>🔐 PIN Required</b><br><br>
+    <input id="p" pinmode autocomplete="off" placeholder="enter PIN" onkeydown="if(event.key==='Enter')savePin()"><br>
+    <button onclick="savePin()">Unlock</button>
+  </div>
 </div>
-<div id=r></div>
-</div>
-<div id=pinoverlay><div id=pinbox><b>🔐 PIN required</b><br><br>
-<input id=p pinmode autocomplete=off placeholder='enter PIN' onkeydown="if(event.key==='Enter')savePin()"><br><br>
-<button onclick="savePin()">Unlock</button></div></div>
+
 <script>
 let pin=localStorage.getItem('tune_pin')||'';
 let spkActive=false;
 let spkTrackUrl='';
 let refreshing=false;
+
+let dark = localStorage.getItem('tune_theme') === 'dark';
+function applyTheme() {
+  if (dark) {
+    document.documentElement.classList.add('dark');
+    const tb = document.getElementById('themebtn');
+    if(tb) tb.textContent = '☀️ Light Mode';
+  } else {
+    document.documentElement.classList.remove('dark');
+    const tb = document.getElementById('themebtn');
+    if(tb) tb.textContent = '🌙 Dark Mode';
+  }
+}
+function toggleTheme() {
+  dark = !dark;
+  localStorage.setItem('tune_theme', dark ? 'dark' : 'light');
+  applyTheme();
+}
+applyTheme();
 
 function toggleSpeaker(){
   spkActive=!spkActive;
@@ -138,8 +271,8 @@ function toggleSpeaker(){
   if(spkActive){
     if(btn){
       btn.textContent='🔊 Phone Speaker ON';
-      btn.style.background='linear-gradient(135deg,var(--lav),var(--pink))';
-      btn.style.color='#fff';
+      btn.style.background='var(--accent)';
+      btn.style.color=dark?'#000':'#fff';
     }
     refresh(true);
   }else{
@@ -307,12 +440,12 @@ async function search(){
     const html = rs.map((t, i) => {
       const urlEsc = (t.url || '').replace(/'/g, "\\'");
       const ch = t.channel ? `<div style="font-size:12px;color:var(--muted);margin-top:2px">${t.channel}</div>` : '';
-      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;margin:8px 0;background:var(--card);border-radius:16px;box-shadow:var(--shadow)">
-        <div style="flex:1;overflow:hidden;margin-right:12px" onclick="playUrl('${urlEsc}')">
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;margin:8px 0;background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)">
+        <div style="flex:1;overflow:hidden;margin-right:12px;cursor:pointer" onclick="playUrl('${urlEsc}')">
           <div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.title}</div>
           ${ch}
         </div>
-        <button onclick="playUrl('${urlEsc}')" style="border:0;background:linear-gradient(135deg,var(--lav),var(--pink));color:#fff;border-radius:12px;padding:7px 14px;font-weight:700;font-size:13px;cursor:pointer;flex:none">▶ Play</button>
+        <button onclick="playUrl('${urlEsc}')" style="border:0;background:var(--accent);color:${dark ? '#000' : '#fff'};border-radius:10px;padding:7px 14px;font-weight:700;font-size:13px;cursor:pointer;flex:none">▶ Play</button>
       </div>`;
     }).join('');
     if(resEl) resEl.innerHTML = html;
@@ -338,7 +471,6 @@ function savePin(){
 
 refresh();
 setInterval(() => refresh(false), 250);
-
 </script></body></html>"""
 
 
