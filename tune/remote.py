@@ -232,20 +232,34 @@ async function refresh(force){
     if(spkActive){
       const audio = document.getElementById('spkaudio');
       if(audio){
+        const serverTs = d.ts || (Date.now() / 1000.0);
+        const elapsedSinceServer = (Date.now() / 1000.0) - serverTs;
+        const targetPos = (d.position || 0) + (d.state === 'playing' ? Math.max(0, elapsedSinceServer) : 0);
         const targetUrl = d.direct_url || (d.url ? '/api/stream_proxy?pin=' + encodeURIComponent(pin) + '&url=' + encodeURIComponent(d.url) : '');
+
         if(targetUrl && (spkTrackUrl !== d.url || force)){
           spkTrackUrl = d.url;
           audio.src = targetUrl;
-          if(d.position) audio.currentTime = d.position;
-          if(d.state==='playing') audio.play().catch(e => {});
+          audio.preload = 'auto';
+          if(targetPos > 0) audio.currentTime = targetPos;
+          if(d.state === 'playing') audio.play().catch(e => {});
         }
-        if(d.state==='playing' && audio.paused && audio.src){
-          audio.play().catch(e => {});
-        }else if(d.state!=='playing' && !audio.paused){
-          audio.pause();
-        }
-        if(!audio.paused && d.position && Math.abs(audio.currentTime - d.position) > 1.5){
-          audio.currentTime = d.position;
+
+        if(d.state === 'playing'){
+          if(audio.paused && audio.src){
+            audio.play().catch(e => {});
+          }
+          const diff = targetPos - audio.currentTime;
+          if(Math.abs(diff) > 0.08){
+            audio.currentTime = targetPos;
+            audio.playbackRate = 1.0;
+          }else if(Math.abs(diff) > 0.015){
+            audio.playbackRate = diff > 0 ? 1.03 : 0.97;
+          }else{
+            audio.playbackRate = 1.0;
+          }
+        }else{
+          if(!audio.paused) audio.pause();
         }
       }
     }
@@ -323,7 +337,7 @@ function savePin(){
 }
 
 refresh();
-setInterval(refresh, 500);
+setInterval(() => refresh(false), 250);
 
 </script></body></html>"""
 

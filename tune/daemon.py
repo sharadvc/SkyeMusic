@@ -2673,6 +2673,7 @@ class Daemon:
 
                     "downloaded": is_downloaded(now.url) if now else False,
                     "error": self._error,
+                    "ts": time.time(),
                 },
             }
 
