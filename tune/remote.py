@@ -268,6 +268,8 @@ let pin=localStorage.getItem('tune_pin')||'';
 let spkActive=false;
 let spkTrackUrl='';
 let refreshing=false;
+let lastStatus=null;
+let lastStatusRecvTime=0;
 
 const SVGS = {
   play: `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
@@ -310,6 +312,9 @@ function toggleSpeaker(){
       btn.style.background='var(--accent)';
       btn.style.color=dark?'#000':'#fff';
     }
+    if(audio){
+      audio.play().catch(e=>{});
+    }
     refresh(true);
   }else{
     if(lbl) lbl.textContent='Phone Speaker OFF';
@@ -320,6 +325,7 @@ function toggleSpeaker(){
     if(audio){
       audio.pause();
       audio.src='';
+      audio.playbackRate=1.0;
     }
     spkTrackUrl='';
   }
@@ -342,6 +348,72 @@ async function c(v,a){
 function vid(u){const m=(u||'').match(/[?&]v=([\\w-]{11})/);return m?m[1]:''}
 const fmt=s=>{s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
 
+function getHostPos(){
+  if(!lastStatus) return 0;
+  const now = Date.now() / 1000;
+  const serverTs = lastStatus.ts || lastStatusRecvTime;
+  const elapsed = Math.max(0, now - serverTs);
+  const dur = lastStatus.duration || 0;
+  const rawPos = lastStatus.position || 0;
+  if(lastStatus.state === 'playing'){
+    const est = rawPos + elapsed;
+    return dur ? Math.min(dur, est) : est;
+  }
+  return rawPos;
+}
+
+function syncLoop(){
+  if(!lastStatus) return;
+  const hostPos = getHostPos();
+  const dur = lastStatus.duration || 0;
+
+  const seek = document.getElementById('seek');
+  if(seek && !seek.__drag){
+    seek.max = Math.max(1, Math.round(dur));
+    seek.value = Math.min(hostPos, seek.max);
+    const tcur = document.getElementById('tcur');
+    if(tcur) tcur.textContent = fmt(seek.value);
+  }
+
+  if(spkActive){
+    const audio = document.getElementById('spkaudio');
+    if(audio){
+      const targetUrl = lastStatus.direct_url || (lastStatus.url ? '/api/stream_proxy?pin=' + encodeURIComponent(pin) + '&url=' + encodeURIComponent(lastStatus.url) : '');
+      if(targetUrl && (spkTrackUrl !== lastStatus.url)){
+        spkTrackUrl = lastStatus.url;
+        audio.src = targetUrl;
+        audio.currentTime = hostPos;
+        if(lastStatus.state === 'playing'){
+          audio.play().catch(e=>{});
+        }
+      }
+
+      if(lastStatus.state === 'playing'){
+        if(audio.paused && audio.src && audio.readyState >= 2){
+          audio.play().catch(e=>{});
+        }
+        if(!audio.paused && audio.duration > 0){
+          const drift = audio.currentTime - hostPos;
+          if(Math.abs(drift) > 1.2){
+            audio.currentTime = hostPos;
+            audio.playbackRate = 1.0;
+          } else if(Math.abs(drift) > 0.04){
+            const rate = 1.0 - (drift * 0.4);
+            audio.playbackRate = Math.max(0.92, Math.min(1.08, rate));
+          } else {
+            audio.playbackRate = 1.0;
+          }
+        }
+      } else {
+        if(!audio.paused){
+          audio.pause();
+        }
+        audio.playbackRate = 1.0;
+      }
+    }
+  }
+}
+
 async function refresh(force){
   if(refreshing && !force) return;
   refreshing = true;
@@ -349,8 +421,11 @@ async function refresh(force){
     const r=await fetch(qs('status'));
     if(r.status===401){askPin();return;}
     if(!r.ok) return;
+    const recvTs = Date.now() / 1000;
     const j=await r.json();
     const d=j.data||{};
+    lastStatus = d;
+    lastStatusRecvTime = recvTs;
 
     const tiEl = document.getElementById('ti');
     if(tiEl) tiEl.textContent = d.title || 'nothing playing';
@@ -385,39 +460,10 @@ async function refresh(force){
       fbEl.className = d.fav ? 'on' : '';
     }
 
-    const dur = d.duration || 0;
-    const seek = document.getElementById('seek');
-    if(seek){
-      seek.max = Math.max(1, Math.round(dur));
-      if(!seek.__drag){
-        seek.value = Math.min((d.position || 0), seek.max);
-        const tcur = document.getElementById('tcur');
-        if(tcur) tcur.textContent = fmt(seek.value);
-      }
-    }
     const tdur = document.getElementById('tdur');
-    if(tdur) tdur.textContent = fmt(dur);
+    if(tdur) tdur.textContent = fmt(d.duration || 0);
 
-    if(spkActive){
-      const audio = document.getElementById('spkaudio');
-      if(audio){
-        const targetUrl = d.direct_url || (d.url ? '/api/stream_proxy?pin=' + encodeURIComponent(pin) + '&url=' + encodeURIComponent(d.url) : '');
-        if(targetUrl && (spkTrackUrl !== d.url || force)){
-          spkTrackUrl = d.url;
-          audio.src = targetUrl;
-          if(d.position) audio.currentTime = d.position;
-          if(d.state === 'playing') audio.play().catch(e => {});
-        }
-        if(d.state === 'playing' && audio.paused && audio.src){
-          audio.play().catch(e => {});
-        }else if(d.state !== 'playing' && !audio.paused){
-          audio.pause();
-        }
-        if(!audio.paused && d.position && Math.abs(audio.currentTime - d.position) > 1.2){
-          audio.currentTime = d.position;
-        }
-      }
-    }
+    syncLoop();
 
     const qEl = document.getElementById('q');
     if(qEl){
@@ -585,8 +631,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "missing url"}, 400)
                 return
             try:
-                from .resolver import get_direct_url
-                direct_url = get_direct_url(watch_url)
+                direct_url = self.daemon._cached_direct(watch_url)
+                if not direct_url:
+                    from .resolver import get_direct_url
+                    direct_url = get_direct_url(watch_url)
+                    with self.daemon._lock:
+                        self.daemon._direct_cache[watch_url] = (import_time := __import__("time").time(), direct_url)
                 self.send_response(302)
                 self.send_header("Location", direct_url)
                 self.send_header("Access-Control-Allow-Origin", "*")
