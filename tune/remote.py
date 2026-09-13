@@ -20,27 +20,27 @@ if TYPE_CHECKING:
 
 PAGE = """<!doctype html><html><head><meta charset=utf8>
 <meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>
-<title>tune · Tidal Player</title>
+<title>SKYEMUSIC WEB</title>
 <style>
 :root {
-  --bg: #f4f5f7;
+  --bg: #f4f5f8;
   --card: #ffffff;
-  --border: #e4e6eb;
-  --ink: #111827;
-  --muted: #6b7280;
-  --accent: #009bb3;
-  --accent-light: rgba(0, 155, 179, 0.1);
+  --border: #e2e4e9;
+  --ink: #0f1419;
+  --muted: #657786;
+  --accent: #00a4bd;
+  --accent-subtle: rgba(0, 164, 189, 0.12);
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
 }
 html.dark {
-  --bg: #0b0e14;
-  --card: #151a21;
-  --border: #222933;
-  --ink: #f3f4f6;
-  --muted: #9ca3af;
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #21262d;
+  --ink: #f0f6fc;
+  --muted: #8b949e;
   --accent: #00e5ff;
-  --accent-light: rgba(0, 229, 255, 0.12);
-  --shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  --accent-subtle: rgba(0, 229, 255, 0.15);
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; padding: 0; }
@@ -59,12 +59,12 @@ body {
 }
 .logo-box { display: flex; align-items: center; gap: 10px; }
 .logo {
-  font-size: 22px; font-weight: 900; letter-spacing: 0.12em;
+  font-size: 20px; font-weight: 900; letter-spacing: 0.14em;
   text-transform: uppercase; color: var(--ink);
 }
 .badge {
   font-size: 10px; font-weight: 800; letter-spacing: 0.08em;
-  background: var(--accent-light); color: var(--accent);
+  background: var(--accent-subtle); color: var(--accent);
   padding: 3px 8px; border-radius: 6px; border: 1px solid var(--accent);
   text-transform: uppercase;
 }
@@ -72,7 +72,8 @@ body {
   background: var(--card); border: 1px solid var(--border);
   color: var(--ink); font-size: 13px; font-weight: 600;
   padding: 8px 14px; border-radius: 20px; cursor: pointer;
-  box-shadow: var(--shadow); transition: all 0.2s ease;
+  box-shadow: var(--shadow); display: flex; align-items: center; gap: 6px;
+  transition: all 0.2s ease;
 }
 .theme-btn:active { transform: scale(0.95); }
 
@@ -86,7 +87,7 @@ body {
 #art {
   width: 88px; height: 88px; object-fit: cover; border-radius: 14px;
   flex: none; background: var(--border); display: none;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.1);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
 }
 .track-info { flex: 1; overflow: hidden; }
 #ti {
@@ -110,15 +111,15 @@ body {
 .transport { display: flex; justify-content: center; align-items: center; gap: 20px; margin-top: 22px; }
 .transport button {
   width: 52px; height: 52px; border-radius: 50%; border: 1px solid var(--border);
-  font-size: 20px; cursor: pointer; background: var(--card); color: var(--ink);
+  cursor: pointer; background: var(--card); color: var(--ink);
   box-shadow: var(--shadow); transition: transform 0.12s ease, background 0.2s ease;
   display: flex; align-items: center; justify-content: center;
 }
 .transport button:active { transform: scale(0.92); }
 #pp {
-  width: 62px; height: 62px; font-size: 26px;
+  width: 62px; height: 62px;
   background: var(--accent); color: #ffffff; border: 0;
-  box-shadow: 0 6px 20px var(--accent-light);
+  box-shadow: 0 6px 20px var(--accent-subtle);
 }
 html.dark #pp { color: #000000; }
 
@@ -127,6 +128,7 @@ html.dark #pp { color: #000000; }
   border: 1px solid var(--border); border-radius: 14px; padding: 10px 18px;
   font-size: 14px; font-weight: 600; cursor: pointer; background: var(--card);
   color: var(--ink); box-shadow: var(--shadow); transition: transform 0.12s ease;
+  display: flex; align-items: center; gap: 6px;
 }
 .ic button:active { transform: scale(0.95); }
 #favbtn.on { color: #ff3b30; border-color: #ff3b30; }
@@ -142,10 +144,11 @@ h3 {
   box-shadow: var(--shadow); padding: 12px 14px; margin: 8px 0;
 }
 .qrow .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
-.qrow .cur { color: var(--accent); font-weight: 800; }
+.qrow .cur { color: var(--accent); font-weight: 800; margin-right: 4px; }
 .qrow button {
-  font-size: 13px; padding: 6px 10px; margin: 0 2px; border: 1px solid var(--border);
+  padding: 6px 8px; margin: 0 2px; border: 1px solid var(--border);
   border-radius: 8px; cursor: pointer; background: var(--bg); color: var(--ink);
+  display: inline-flex; align-items: center; justify-content: center;
 }
 
 #searchbox { display: flex; gap: 10px; margin-bottom: 14px; }
@@ -157,7 +160,7 @@ h3 {
 #sbtn {
   border: 0; background: var(--accent); color: #ffffff; border-radius: 14px;
   padding: 0 22px; font-weight: 700; font-size: 14px; cursor: pointer;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow); display: flex; align-items: center; gap: 6px;
 }
 html.dark #sbtn { color: #000000; }
 
@@ -185,10 +188,13 @@ html.dark #pinbox button { color: #000000; }
 <div class="wrap">
   <div class="header">
     <div class="logo-box">
-      <div class="logo">T I D A L</div>
-      <div class="badge">HI-RES AUDIO</div>
+      <div class="logo">SKYEMUSIC WEB</div>
+      <div class="badge">HI-RES LOSSLESS</div>
     </div>
-    <button id="themebtn" class="theme-btn" onclick="toggleTheme()">🌙 Dark Mode</button>
+    <button id="themebtn" class="theme-btn" onclick="toggleTheme()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+      Dark Mode
+    </button>
   </div>
 
   <div class="card">
@@ -205,17 +211,32 @@ html.dark #pinbox button { color: #000000; }
       <span id="tdur">0:00</span>
     </div>
     <div class="transport">
-      <button onclick="c('prev')">⏮</button>
-      <button id="pp" onclick="c('toggle')">⏸</button>
-      <button onclick="c('next')">⏭</button>
+      <button onclick="c('prev')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+      </button>
+      <button id="pp" onclick="c('toggle')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+      </button>
+      <button onclick="c('next')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+      </button>
     </div>
     <div class="ic">
-      <button onclick="c('volume','-5')">🔉−</button>
-      <button onclick="c('volume','+5')">🔊+</button>
-      <button id="favbtn" onclick="c('fav')">♡</button>
+      <button onclick="c('volume','-5')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="15" y1="12" x2="21" y2="12"/></svg>
+      </button>
+      <button onclick="c('volume','+5')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="19" y1="9" x2="19" y2="15"/><line x1="16" y1="12" x2="22" y2="12"/></svg>
+      </button>
+      <button id="favbtn" onclick="c('fav')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+      </button>
     </div>
     <div class="ic" style="margin-top:12px">
-      <button id="spkbtn" onclick="toggleSpeaker()">📻 Phone Speaker OFF</button>
+      <button id="spkbtn" onclick="toggleSpeaker()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="20" x="4" y="2" rx="2"/><circle cx="12" cy="14" r="4"/><line x1="12" y1="6" x2="12.01" y2="6"/></svg>
+        <span id="spklabel">Phone Speaker OFF</span>
+      </button>
     </div>
     <audio id="spkaudio" style="display:none" playsinline></audio>
   </div>
@@ -226,7 +247,10 @@ html.dark #pinbox button { color: #000000; }
   <h3>Search</h3>
   <div id="searchbox">
     <input id="qq" placeholder="search song or artist…" onkeydown="if(event.key==='Enter')search()">
-    <button id="sbtn" onclick="search()">Search</button>
+    <button id="sbtn" onclick="search()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      Search
+    </button>
   </div>
   <div id="r"></div>
 </div>
@@ -245,16 +269,27 @@ let spkActive=false;
 let spkTrackUrl='';
 let refreshing=false;
 
+const SVGS = {
+  play: `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
+  pause: `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`,
+  heart: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>`,
+  heartFilled: `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>`,
+  up: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>`,
+  down: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
+  close: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
+  sun: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`,
+  moon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`
+};
+
 let dark = localStorage.getItem('tune_theme') === 'dark';
 function applyTheme() {
+  const tb = document.getElementById('themebtn');
   if (dark) {
     document.documentElement.classList.add('dark');
-    const tb = document.getElementById('themebtn');
-    if(tb) tb.textContent = '☀️ Light Mode';
+    if(tb) tb.innerHTML = SVGS.sun + ' Light Mode';
   } else {
     document.documentElement.classList.remove('dark');
-    const tb = document.getElementById('themebtn');
-    if(tb) tb.textContent = '🌙 Dark Mode';
+    if(tb) tb.innerHTML = SVGS.moon + ' Dark Mode';
   }
 }
 function toggleTheme() {
@@ -267,17 +302,18 @@ applyTheme();
 function toggleSpeaker(){
   spkActive=!spkActive;
   const btn=document.getElementById('spkbtn');
+  const lbl=document.getElementById('spklabel');
   const audio=document.getElementById('spkaudio');
   if(spkActive){
+    if(lbl) lbl.textContent='Phone Speaker ON';
     if(btn){
-      btn.textContent='🔊 Phone Speaker ON';
       btn.style.background='var(--accent)';
       btn.style.color=dark?'#000':'#fff';
     }
     refresh(true);
   }else{
+    if(lbl) lbl.textContent='Phone Speaker OFF';
     if(btn){
-      btn.textContent='📻 Phone Speaker OFF';
       btn.style.background='var(--card)';
       btn.style.color='var(--ink)';
     }
@@ -341,11 +377,11 @@ async function refresh(force){
     }
 
     const ppEl = document.getElementById('pp');
-    if(ppEl) ppEl.textContent = (d.state==='playing'||d.state==='loading') ? '⏸' : '▶';
+    if(ppEl) ppEl.innerHTML = (d.state==='playing'||d.state==='loading') ? SVGS.pause : SVGS.play;
 
     const fbEl = document.getElementById('favbtn');
     if(fbEl){
-      fbEl.textContent = d.fav ? '♥' : '♡';
+      fbEl.innerHTML = d.fav ? SVGS.heartFilled : SVGS.heart;
       fbEl.className = d.fav ? 'on' : '';
     }
 
@@ -402,9 +438,9 @@ async function refresh(force){
       const rows = (d.queue || []).map((t, i) => {
         const cur = (i === d.current_index) ? '<span class=cur>▶</span> ' : '';
         const label = cur + '<span class=t>' + (t.title || 'Track') + '</span>';
-        const up = (i > 0) ? `<button onclick="c('move','${i} ${i-1}')">▲</button>` : '';
-        const dn = (i < d.queue_len - 1) ? `<button onclick="c('move','${i+2} ${i+1}')">▼</button>` : '';
-        return `<div class=qrow>${label}<span style="flex:none">${up}${dn}<button onclick="c('remove','${i+1}')">✕</button></span></div>`;
+        const up = (i > 0) ? `<button onclick="c('move','${i} ${i-1}')">${SVGS.up}</button>` : '';
+        const dn = (i < d.queue_len - 1) ? `<button onclick="c('move','${i+2} ${i+1}')">${SVGS.down}</button>` : '';
+        return `<div class=qrow>${label}<span style="flex:none">${up}${dn}<button onclick="c('remove','${i+1}')">${SVGS.close}</button></span></div>`;
       }).join('');
       qEl.innerHTML = rows || '<div class=qrow style="color:var(--muted)">queue is empty</div>';
     }
@@ -445,7 +481,7 @@ async function search(){
           <div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.title}</div>
           ${ch}
         </div>
-        <button onclick="playUrl('${urlEsc}')" style="border:0;background:var(--accent);color:${dark ? '#000' : '#fff'};border-radius:10px;padding:7px 14px;font-weight:700;font-size:13px;cursor:pointer;flex:none">▶ Play</button>
+        <button onclick="playUrl('${urlEsc}')" style="border:0;background:var(--accent);color:${dark ? '#000' : '#fff'};border-radius:10px;padding:7px 14px;font-weight:700;font-size:13px;cursor:pointer;flex:none;display:flex;align-items:center;gap:4px">▶ Play</button>
       </div>`;
     }).join('');
     if(resEl) resEl.innerHTML = html;
