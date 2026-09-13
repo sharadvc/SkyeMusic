@@ -108,11 +108,36 @@ h3{margin:22px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:
     <button onclick="c('volume','+5')">🔊+</button>
     <button id=favbtn onclick="c('fav')">♡</button>
   </div>
-  <div class=ic style="margin-top:10px">
+  <div class=ic style="margin-top:10px;flex-wrap:wrap;gap:8px">
     <button id=spkbtn onclick="toggleSpeaker()">📻 Phone Speaker OFF</button>
+    <button id=resyncbtn onclick="resyncAll()" style="display:none">⚡ Resync Speakers</button>
+  </div>
+  <div id=spkcontrols style="display:none;margin-top:14px;padding:12px;background:#f5edf9;border-radius:16px">
+    <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px;text-transform:uppercase">Channel Routing & Volume</div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <button onclick="setChannel('stereo')" id=ch_stereo class="chbtn" style="flex:1;padding:8px;font-size:12px;border-radius:10px;border:0;background:var(--lav);color:#fff">🎧 Stereo</button>
+      <button onclick="setChannel('left')" id=ch_left class="chbtn" style="flex:1;padding:8px;font-size:12px;border-radius:10px;border:0;background:#e9e0f2;color:var(--ink)">◀️ Left Only</button>
+      <button onclick="setChannel('right')" id=ch_right class="chbtn" style="flex:1;padding:8px;font-size:12px;border-radius:10px;border:0;background:#e9e0f2;color:var(--ink)">▶️ Right Only</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="font-size:12px;color:var(--muted)">Phone Vol</span>
+      <input id=spkvol type=range min=0 max=100 value=100 oninput="setSpkVol(this.value)" style="flex:1">
+      <span id=spkvolval style="font-size:12px;color:var(--ink);min-width:32px">100%</span>
+    </div>
   </div>
   <audio id=spkaudio style="display:none" playsinline></audio>
 </div>
+
+<h3>📶 Bluetooth & Audio Output</h3>
+<div id=devlist class=card style="padding:12px">
+  <div style="font-size:13px;color:var(--muted)">Scanning audio devices…</div>
+</div>
+
+<h3>📻 Connected Speaker Matrix</h3>
+<div id=matrix class=card style="padding:12px">
+  <div style="font-size:13px;color:var(--muted)">No secondary phone speakers connected yet. Tap 'Phone Speaker ON' above to join this device.</div>
+</div>
+
 <h3>Queue</h3><div id=q></div>
 <h3>Search</h3><input id=qq placeholder='type a song name' onkeydown="if(event.key==='Enter')search()">
 <div id=r></div>
@@ -124,30 +149,172 @@ h3{margin:22px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:
 let pin=localStorage.getItem('tune_pin')||'';
 let spkActive=false;
 let spkTrackUrl='';
+let nodeId='node_'+Math.random().toString(36).substring(2,9);
+let channelMode='stereo';
+let nodeVolume=100;
+let audioCtx=null, mediaSrcNode=null, pannerNode=null, gainNode=null;
+
+function initWebAudio(audioEl){
+  if(audioCtx) return;
+  try{
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioContext();
+    mediaSrcNode = audioCtx.createMediaElementSource(audioEl);
+    pannerNode = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
+    gainNode = audioCtx.createGain();
+    
+    if(pannerNode){
+      mediaSrcNode.connect(pannerNode);
+      pannerNode.connect(gainNode);
+    }else{
+      mediaSrcNode.connect(gainNode);
+    }
+    gainNode.connect(audioCtx.destination);
+  }catch(e){}
+}
+
+function applyAudioRouting(){
+  if(gainNode){
+    gainNode.gain.value = nodeVolume / 100.0;
+  }
+  if(pannerNode){
+    if(channelMode === 'left') pannerNode.pan.value = -1.0;
+    else if(channelMode === 'right') pannerNode.pan.value = 1.0;
+    else pannerNode.pan.value = 0.0;
+  }
+}
+
+function setChannel(mode){
+  channelMode = mode;
+  document.querySelectorAll('.chbtn').forEach(b => {
+    b.style.background = '#e9e0f2';
+    b.style.color = 'var(--ink)';
+  });
+  const activeBtn = document.getElementById('ch_' + mode);
+  if(activeBtn){
+    activeBtn.style.background = 'var(--lav)';
+    activeBtn.style.color = '#fff';
+  }
+  applyAudioRouting();
+  sendHeartbeat();
+}
+
+function setSpkVol(v){
+  nodeVolume = parseInt(v);
+  document.getElementById('spkvolval').textContent = v + '%';
+  applyAudioRouting();
+  sendHeartbeat();
+}
 
 function toggleSpeaker(){
   spkActive=!spkActive;
   const btn=document.getElementById('spkbtn');
+  const resyncBtn=document.getElementById('resyncbtn');
+  const ctrlBox=document.getElementById('spkcontrols');
   const audio=document.getElementById('spkaudio');
   if(spkActive){
+    initWebAudio(audio);
+    if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
     btn.textContent='🔊 Phone Speaker ON';
     btn.style.background='linear-gradient(135deg,var(--lav),var(--pink))';
     btn.style.color='#fff';
+    resyncBtn.style.display='inline-block';
+    ctrlBox.style.display='block';
     refresh(true);
+    sendHeartbeat();
   }else{
     btn.textContent='📻 Phone Speaker OFF';
     btn.style.background='var(--card)';
     btn.style.color='var(--ink)';
+    resyncBtn.style.display='none';
+    ctrlBox.style.display='none';
     audio.pause();
     audio.src='';
     spkTrackUrl='';
   }
 }
 
+function resyncAll(){
+  const audio=document.getElementById('spkaudio');
+  if(spkActive && audio){
+    refresh(true);
+  }
+}
+
+async function sendHeartbeat(){
+  if(!spkActive) return;
+  try{
+    const payload = {
+      action: 'heartbeat',
+      node_id: nodeId,
+      name: navigator.userAgent.includes('iPhone') ? '📱 iPhone' : (navigator.userAgent.includes('iPad') ? '📱 iPad' : '💻 Browser'),
+      volume: nodeVolume,
+      channel: channelMode,
+      muted: false
+    };
+    await fetch(qs('multiroom', JSON.stringify(payload)));
+  }catch(e){}
+}
+
 function qs(v,a){let u='/api/'+v+'?pin='+encodeURIComponent(pin);if(a)u+='&arg='+encodeURIComponent(a);return u}
 async function c(v,a){try{const r=await fetch(qs(v,a));if(r.status===401){askPin();return}await refresh()}catch(e){}}
 function vid(u){const m=(u||'').match(/[?&]v=([\\w-]{11})/);return m?m[1]:''}
 const fmt=s=>{s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+
+async function switchDevice(devName){
+  try{
+    await fetch(qs('device', devName));
+    await loadDevices();
+  }catch(e){}
+}
+
+async function loadDevices(){
+  try{
+    const r=await fetch(qs('device'));
+    if(!r.ok) return;
+    const j=await r.json();
+    const d=j.data||{};
+    const devs=d.devices||[];
+    const cur=d.current||'';
+    const html=devs.map(dev=>{
+      const isCur = (dev.name === cur);
+      const isBt = dev.description.toLowerCase().includes('bluetooth') || dev.description.toLowerCase().includes('airpods') || dev.name.toLowerCase().includes('blue');
+      const icon = isBt ? '📶' : '🔊';
+      const badge = isCur ? ' <span style="color:var(--lav);font-weight:700">● Active</span>' : '';
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0e9f2">
+        <span style="font-size:14px">${icon} ${dev.description}${badge}</span>
+        ${isCur ? '' : `<button onclick="switchDevice('${dev.name.replace(/'/g, "\\'")}')" style="font-size:12px;padding:5px 10px;border-radius:10px;border:0;background:#efe5f7;cursor:pointer">Connect</button>`}
+      </div>`;
+    }).join('');
+    document.getElementById('devlist').innerHTML = html || '<div style="font-size:13px;color:var(--muted)">No devices found</div>';
+  }catch(e){}
+}
+
+async function loadMatrix(){
+  try{
+    const r=await fetch(qs('multiroom'));
+    if(!r.ok) return;
+    const j=await r.json();
+    const nodes=(j.data&&j.data.nodes)||[];
+    if(!nodes.length){
+      document.getElementById('matrix').innerHTML='<div style="font-size:13px;color:var(--muted)">No secondary phone speakers connected yet. Tap \'Phone Speaker ON\' above to join this device.</div>';
+      return;
+    }
+    const html=nodes.map(n=>{
+      const isSelf = (n.node_id === nodeId);
+      const chLabel = n.channel === 'left' ? '◀️ Left' : (n.channel === 'right' ? '▶️ Right' : '🎧 Stereo');
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0e9f2">
+        <div>
+          <span style="font-size:14px;font-weight:700">${n.name}${isSelf ? ' (This Phone)' : ''}</span>
+          <div style="font-size:12px;color:var(--muted)">${chLabel} · Vol ${n.volume}%</div>
+        </div>
+        <span style="font-size:12px;color:#6bc598;font-weight:700">● Synced</span>
+      </div>`;
+    }).join('');
+    document.getElementById('matrix').innerHTML = html;
+  }catch(e){}
+}
+
 async function refresh(force){try{
  const r=await fetch(qs('status'));if(r.status===401){askPin();return}
  const j=await r.json();const d=j.data||{};
@@ -179,6 +346,7 @@ async function refresh(force){try{
    if(!audio.paused&&d.position&&Math.abs(audio.currentTime-d.position)>1.2){
      audio.currentTime=d.position;
    }
+   sendHeartbeat();
  }
 
  const rows=(d.queue||[]).map((t,i)=>{
@@ -202,8 +370,12 @@ async function search(){const q=document.getElementById('qq').value;
 function askPin(){document.getElementById('pinoverlay').style.display='flex';document.getElementById('p').focus()}
 function savePin(){pin=document.getElementById('p').value;localStorage.setItem('tune_pin',pin);
  document.getElementById('pinoverlay').style.display='none';refresh()}
-refresh();setInterval(refresh,2000);
+refresh();loadDevices();loadMatrix();
+setInterval(refresh,2000);
+setInterval(loadDevices,6000);
+setInterval(loadMatrix,4000);
 </script></body></html>"""
+
 
 
 _EXTRA_TYPES = {

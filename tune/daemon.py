@@ -204,7 +204,9 @@ class Daemon:
         self._undo: list = []  # ("remove", i, track) | ("clear", tr, idx) |
                               # ("replace", tr, idx) | ("shuffle", tr)
         self._eq_preset: str = str(self.cfg.get("equalizer_preset") or "flat")
+        self._multiroom_nodes: dict[str, dict] = {}
         # DJ mode is always off on daemon start — never restored from config.
+
         # This ensures `skye` always opens in normal view.
         self._dj_mode: bool = False
         self.cfg.set("dj_mode", False)
@@ -1023,7 +1025,9 @@ class Daemon:
             "sleep": self._h_sleep,
             "config": self._h_config,
             "remote": self._h_remote,
+            "multiroom": self._h_multiroom,
             "quit-daemon": self._h_quit,
+
         }.get(verb))
         if handler is None:
             return {"ok": False, "error": f"unknown verb {verb!r}"}
@@ -1842,19 +1846,69 @@ class Daemon:
             handle = self.player
             if handle is None:
                 return {"ok": False, "error": "player not running"}
+            devices = handle.get_property("audio-device-list") or []
+            dev_list = [{"name": d.get("name"), "description": d.get("description")} for d in devices]
             if not arg:
-                devices = handle.get_property("audio-device-list") or []
                 return {"ok": True, "data": {
                     "current": handle.get_property("audio-device"),
-                    "devices": [{"name": d.get("name"), "description": d.get("description")}
-                                for d in devices],
+                    "devices": dev_list,
                 }}
-            self.cfg.set("device", arg)  # persists + applies on next spawn
+
+            arg_low = arg.strip().lower()
+            target_name = arg
+            matched_desc = arg
+            for d in devices:
+                name = str(d.get("name") or "").lower()
+                desc = str(d.get("description") or "").lower()
+                if arg_low in name or arg_low in desc:
+                    target_name = str(d.get("name") or "")
+                    matched_desc = str(d.get("description") or "")
+                    break
+
+            self.cfg.set("device", target_name)
             try:
-                handle.set_property("audio-device", arg)
-            except MpvError:
-                pass  # takes effect on next spawn
-            return {"ok": True, "data": {"device": arg}}
+                handle.set_property("audio-device", target_name)
+            except MpvError as e:
+                return {"ok": False, "error": f"player error: {e}"}
+            return {"ok": True, "data": {"device": target_name, "description": matched_desc}}
+
+    def _h_multiroom(self, arg) -> dict:
+        """Manage multi-room audio speaker nodes (registration, heartbeat, matrix control)."""
+        if isinstance(arg, str):
+            try:
+                msg = json.loads(arg)
+            except Exception:
+                msg = {"action": "list"}
+        elif isinstance(arg, dict):
+            msg = arg
+        else:
+            msg = {"action": "list"}
+
+        action = msg.get("action", "list")
+        now_t = time.time()
+        with self._lock:
+            # clean stale nodes (> 12s without heartbeat)
+            stale = [nid for nid, n in self._multiroom_nodes.items() if now_t - n.get("ts", 0) > 12.0]
+            for nid in stale:
+                self._multiroom_nodes.pop(nid, None)
+
+            if action in ("register", "heartbeat", "update"):
+                node_id = str(msg.get("node_id") or f"node_{len(self._multiroom_nodes)+1}")
+                entry = self._multiroom_nodes.get(node_id, {})
+                entry.update({
+                    "node_id": node_id,
+                    "name": str(msg.get("name") or entry.get("name") or "Phone Speaker"),
+                    "volume": int(msg.get("volume", entry.get("volume", 100))),
+                    "channel": str(msg.get("channel") or entry.get("channel") or "stereo"),
+                    "muted": bool(msg.get("muted", entry.get("muted", False))),
+                    "ts": now_t,
+                })
+                self._multiroom_nodes[node_id] = entry
+                return {"ok": True, "data": {"node": entry, "active_count": len(self._multiroom_nodes)}}
+
+            nodes = list(self._multiroom_nodes.values())
+            return {"ok": True, "data": {"nodes": nodes, "active_count": len(nodes)}}
+
 
     def _h_download(self, arg: str = "") -> dict:
         target_track = None
