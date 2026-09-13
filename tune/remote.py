@@ -419,11 +419,11 @@ async function refresh(force){
             audio.play().catch(e => {});
           }
           const diff = targetPos - audio.currentTime;
-          if(Math.abs(diff) > 0.08){
+          if(Math.abs(diff) > 0.6){
             audio.currentTime = targetPos;
             audio.playbackRate = 1.0;
-          }else if(Math.abs(diff) > 0.015){
-            audio.playbackRate = diff > 0 ? 1.03 : 0.97;
+          }else if(Math.abs(diff) > 0.04){
+            audio.playbackRate = diff > 0 ? 1.025 : 0.975;
           }else{
             audio.playbackRate = 1.0;
           }
