@@ -108,6 +108,10 @@ h3{margin:22px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:
     <button onclick="c('volume','+5')">🔊+</button>
     <button id=favbtn onclick="c('fav')">♡</button>
   </div>
+  <div class=ic style="margin-top:10px">
+    <button id=spkbtn onclick="toggleSpeaker()">📻 Phone Speaker OFF</button>
+  </div>
+  <audio id=spkaudio style="display:none" playsinline></audio>
 </div>
 <h3>Queue</h3><div id=q></div>
 <h3>Search</h3><input id=qq placeholder='type a song name' onkeydown="if(event.key==='Enter')search()">
@@ -118,11 +122,33 @@ h3{margin:22px 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:
 <button onclick="savePin()">Unlock</button></div></div>
 <script>
 let pin=localStorage.getItem('tune_pin')||'';
+let spkActive=false;
+let spkTrackUrl='';
+
+function toggleSpeaker(){
+  spkActive=!spkActive;
+  const btn=document.getElementById('spkbtn');
+  const audio=document.getElementById('spkaudio');
+  if(spkActive){
+    btn.textContent='🔊 Phone Speaker ON';
+    btn.style.background='linear-gradient(135deg,var(--lav),var(--pink))';
+    btn.style.color='#fff';
+    refresh(true);
+  }else{
+    btn.textContent='📻 Phone Speaker OFF';
+    btn.style.background='var(--card)';
+    btn.style.color='var(--ink)';
+    audio.pause();
+    audio.src='';
+    spkTrackUrl='';
+  }
+}
+
 function qs(v,a){let u='/api/'+v+'?pin='+encodeURIComponent(pin);if(a)u+='&arg='+encodeURIComponent(a);return u}
 async function c(v,a){try{const r=await fetch(qs(v,a));if(r.status===401){askPin();return}await refresh()}catch(e){}}
 function vid(u){const m=(u||'').match(/[?&]v=([\\w-]{11})/);return m?m[1]:''}
 const fmt=s=>{s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
-async function refresh(){try{
+async function refresh(force){try{
  const r=await fetch(qs('status'));if(r.status===401){askPin();return}
  const j=await r.json();const d=j.data||{};
  document.getElementById('ti').textContent=d.title||'nothing playing';
@@ -135,6 +161,26 @@ async function refresh(){try{
  seek.max=Math.max(1,Math.round(dur));
  document.getElementById('tdur').textContent=fmt(dur);
  if(!seek.__drag){ seek.value=Math.min((d.position||0),seek.max); document.getElementById('tcur').textContent=fmt(seek.value); }
+
+ if(spkActive){
+   const audio=document.getElementById('spkaudio');
+   const targetUrl=d.direct_url||(d.url?'/api/stream_proxy?pin='+encodeURIComponent(pin)+'&url='+encodeURIComponent(d.url):'');
+   if(targetUrl&&(spkTrackUrl!==d.url||force)){
+     spkTrackUrl=d.url;
+     audio.src=targetUrl;
+     if(d.position) audio.currentTime=d.position;
+     if(d.state==='playing') audio.play().catch(e=>{});
+   }
+   if(d.state==='playing'&&audio.paused&&audio.src){
+     audio.play().catch(e=>{});
+   }else if(d.state!=='playing'&&!audio.paused){
+     audio.pause();
+   }
+   if(!audio.paused&&d.position&&Math.abs(audio.currentTime-d.position)>1.2){
+     audio.currentTime=d.position;
+   }
+ }
+
  const rows=(d.queue||[]).map((t,i)=>{
    const cur=(i===d.current_index)?'<span class=cur>▶</span> ':'';
    const label=cur+'<span class=t>'+t.title+'</span>';
@@ -240,6 +286,25 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if parsed.path == "/api/stream_proxy":
+            if not self._authorized(parsed.query):
+                self._json({"ok": False, "error": "pin required"}, 401)
+                return
+            watch_url = parse_qs(parsed.query).get("url", [""])[0]
+            if not watch_url:
+                self._json({"ok": False, "error": "missing url"}, 400)
+                return
+            try:
+                from .resolver import get_direct_url
+                direct_url = get_direct_url(watch_url)
+                self.send_response(302)
+                self.send_header("Location", direct_url)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                return
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)}, 500)
+                return
         if parsed.path.startswith("/api/"):
             if not self._authorized(parsed.query):
                 self._json({"ok": False, "error": "pin required"}, 401)
@@ -263,4 +328,5 @@ def start(daemon, port: int):
     Handler.daemon = daemon
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
 

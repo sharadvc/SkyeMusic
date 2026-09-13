@@ -2596,7 +2596,9 @@ class Daemon:
                     "smart_queue": bool(self.cfg.get("smart_queue")),
                     "dj_mode": getattr(self, "_dj_mode", False),
                     "fav": self._is_fav(now.url if now else None),
+                    "direct_url": self._cached_direct(now.url) if now else None,
                     "eq": getattr(self, "_eq_preset", "flat"),
+
                     "downloaded": is_downloaded(now.url) if now else False,
                     "error": self._error,
                 },
