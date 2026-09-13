@@ -205,7 +205,9 @@ class Daemon:
                               # ("replace", tr, idx) | ("shuffle", tr)
         self._eq_preset: str = str(self.cfg.get("equalizer_preset") or "flat")
         self._multiroom_nodes: dict[str, dict] = {}
+        self._user_paused: bool = False
         # DJ mode is always off on daemon start — never restored from config.
+
 
         # This ensures `skye` always opens in normal view.
         self._dj_mode: bool = False
@@ -482,7 +484,13 @@ class Daemon:
             elif kind == "file-loaded":
                 with self._lock:
                     self._state = "playing"
+                    if self.player and not self._user_paused:
+                        try:
+                            self.player.set_property("pause", False)
+                        except Exception:
+                            pass
                     self._apply_loaded_position_locked()
+
                     if self._speed != 1.0 and self.player:
                         try:
                             self.player.set_property("speed", self._speed)
@@ -1125,7 +1133,13 @@ class Daemon:
                 self.q.index = 0
                 self.q.shuffle = False
                 self._load_current_locked()
+                if self.player:
+                    try:
+                        self.player.set_property("pause", False)
+                    except Exception:
+                        pass
         self._spawn_enrich(tracks)
+
 
     def _h_play(self, arg) -> dict:
         args = arg if isinstance(arg, list) else [arg]
@@ -1777,6 +1791,7 @@ class Daemon:
 
     def _h_pause(self, _arg: str = "") -> dict:
         with self._lock:
+            self._user_paused = True
             if self.player:
                 self.player.set_property("pause", True)
                 self._state = "paused"
@@ -1784,6 +1799,7 @@ class Daemon:
 
     def _h_resume(self, _arg: str = "") -> dict:
         with self._lock:
+            self._user_paused = False
             if self.player:
                 self.player.set_property("pause", False)
                 self._state = "playing"
@@ -1793,9 +1809,11 @@ class Daemon:
         with self._lock:
             if self.player:
                 paused = self.player.get_property("pause")
+                self._user_paused = not paused
                 self.player.set_property("pause", not paused)
-                self._state = "paused" if paused else "playing"
+                self._state = "paused" if not paused else "playing"
         return {"ok": True}
+
 
     def _h_stop(self, _arg: str = "") -> dict:
         with self._lock:
