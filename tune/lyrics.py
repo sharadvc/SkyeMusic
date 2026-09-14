@@ -284,13 +284,18 @@ def _clean_title_noise(t: str) -> str:
     """Remove video metadata noise, tags, and trailing descriptors."""
     if not t:
         return ""
-    # Bracketed noise: [Official Video], (Lyrics), [HD], etc.
-    t = re.sub(r"(?i)\s*[\(\[](?:official\s+)?(?:music\s+)?(?:video|audio|lyrics?|lyric\s+video|visualizer|hd|4k|remastered|performance|live|version|full\s+song|full\s+video|hq|explicit|clean)[^\)\]]*[\)\]]", "", t)
+    # Bracketed noise: [Official Video], (Lyrics), [HD], etc. Discard everything after it too!
+    parts = re.split(r"(?i)\s*[\(\[](?:official\s+)?(?:music\s+)?(?:video|audio|lyrics?|lyric\s+video|visualizer|hd|4k|remastered|performance|live|version|full\s+song|full\s+video|hq|explicit|clean)[^\)\]]*[\)\]]", t)
+    t = parts[0]
     t = re.sub(r"(?i)\s*[\(\[](?:ft\.?|feat\.?)[^\)\]]+[\)\]]", "", t)
-    # Unbracketed "with lyrics" / "with lyric"
-    t = re.sub(r"(?i)\s*(?:-\s*|\|\s*)?\bwith\s+lyrics?\b", "", t)
-    # Unbracketed video labels at boundaries or end
-    t = re.sub(r"(?i)\s*(?:-\s*|\|\s*)?\b(?:song\s+lyrics?|lyrics?\s+song|full\s+video(?:\s+song)?|official\s+(?:music\s+)?video|lyrical\s+video|lyric\s+video|lyrics?\s+video|lyrics?|official\s+audio|audio\s+song|full\s+audio|full\s+song|video\s+song)\b.*$", "", t)
+    
+    # Strip prefix noise (Full Video:, Lyrical:, etc)
+    t = re.sub(r"(?i)^\s*(?:full\s+video(?:\s+song)?|lyrical(?:\s+video)?|official(?:\s+(?:music\s+)?video)?|audio)\s*[-|:]\s*", "", t)
+    
+    # Strip middle/suffix noise
+    t = re.sub(r"(?i)\s*(?:-\s*|\|\s*|:\s*)?\b(?:song\s+lyrics?|lyrics?\s+song|(?:with\s+)?lyrics?|full\s+video(?:\s+song)?|official\s+(?:music\s+)?video|lyrical\s+video|lyric\s+video|lyrics?\s+video|official\s+audio|audio\s+song|full\s+audio|full\s+song|video\s+song|lyrical|official)\b(?:\s*[-|:]\s*)?", "", t)
+    
+    # Strip trailing "song", "video", "audio"
     t = re.sub(r"(?i)\s+(?:song|video|audio)\s*$", "", t)
     return t.strip()
 
@@ -360,8 +365,39 @@ def get_candidate_queries(title: str, artist: str = "", channel: str = "", query
     extra_segments = pipes[1:] if len(pipes) > 1 else []
     first_clean = _clean_title_noise(first_part)
 
+    # Call the actual robust cleaner to get the most pristine title possible!
+    c_t, c_a = clean_track_info(title, artist)
+
     # Base without parenthetical descriptors (e.g. "Tum Hi Ho (Aashiqui 2)" -> "Tum Hi Ho")
     first_base = re.sub(r"\s*[\(\[][^\)\]]+[\)\]]", "", first_clean).strip()
+
+    # 0. User search query (if available)
+    if query and not (query.startswith("http://") or query.startswith("https://") or query.startswith("ytdl://")):
+        q_clean = _clean_title_noise(query).strip()
+        if q_clean and q_clean not in queries:
+            queries.append(q_clean)
+            if artist:
+                queries.append(f"{q_clean} {artist}")
+
+    # 1. Highest priority: Perfectly extracted title from clean_track_info
+    if c_t and c_t not in queries:
+        queries.append(c_t)
+        if c_a:
+            queries.append(f"{c_t} {c_a}")
+        elif artist:
+            queries.append(f"{c_t} {artist}")
+
+    # 2. Next priority: Base title before parentheses
+
+    # Prioritize the actual clean base title BEFORE any parenthetical elements!
+    if first_base and first_base not in queries:
+        queries.append(first_base)
+        if artist:
+            queries.append(f"{first_base} {artist}")
+    if first_clean and first_clean not in queries:
+        queries.append(first_clean)
+        if artist and first_clean != first_base:
+            queries.append(f"{first_clean} {artist}")
 
     # Extract parenthetical contents that might contain English title transliteration or song name
     for paren in re.findall(r"[\(\[](.*?)[\)\]]", first_clean):
@@ -373,11 +409,13 @@ def get_candidate_queries(title: str, artist: str = "", channel: str = "", query
                     queries.append(f"{pc} {artist}")
 
     # Extract Latin word clusters from mixed-script titles (e.g. "तुम ही हो Aashiqui 2")
-    latin_clusters = [m.strip() for m in re.findall(r"[a-zA-Z0-9'\s]{3,}", first_clean) if len(m.strip().split()) >= 1]
-    for lc in latin_clusters:
-        lc_clean = _clean_title_noise(lc).strip()
-        if lc_clean and lc_clean not in queries and len(lc_clean) >= 3:
-            queries.append(lc_clean)
+    # Only do this if there are actually non-ASCII/Indic characters in the string
+    if re.search(r"[^\x00-\x7F]", first_clean):
+        latin_clusters = [m.strip() for m in re.findall(r"[a-zA-Z0-9'\s]{3,}", first_clean) if len(m.strip().split()) >= 1]
+        for lc in latin_clusters:
+            lc_clean = _clean_title_noise(lc).strip()
+            if lc_clean and lc_clean not in queries and len(lc_clean) >= 3:
+                queries.append(lc_clean)
             if artist:
                 queries.append(f"{lc_clean} {artist}")
 
@@ -541,7 +579,7 @@ def is_matching_song(cand_title: str, cand_artist: str, cand_dur: float | None,
         overlap = len(tgt_words & c_words)
         req_ratio = 0.75 if len(tgt_words) <= 3 else 0.55
         ratio = overlap / max(1, len(tgt_words))
-        is_exact = (c_title_norm == tgt) or (tgt in c_title_norm) or (c_title_norm in tgt)
+        is_exact = (c_title_norm == tgt) or (f" {tgt} " in f" {c_title_norm} ") or (f" {c_title_norm} " in f" {tgt} ")
         if is_exact:
             exact_title = True
         if is_exact or ratio >= req_ratio:
@@ -553,10 +591,14 @@ def is_matching_song(cand_title: str, cand_artist: str, cand_dur: float | None,
     best_ratio = max(ratios) if ratios else 0.0
 
     # 3. Artist verification
+    t_art_clean = re.sub(r"(?i)\s*(?:vevo|topic|official|music|records|channel|entertainment)$", "", t_art_norm).strip()
+    c_art_clean = re.sub(r"(?i)\s*(?:vevo|topic|official|music|records|channel|entertainment)$", "", c_art_norm).strip()
+
     art_stopwords = {"topic", "vevo", "official", "records", "music", "the", "entertainment", "channel", "company"}
     channel_labels = {"tseries", "t series", "sony", "sonymusic", "zee", "zeemusic", "tips", "yrf", "saregama", "universal", "records", "music"}
-    ta_words = set(t_art_norm.split()) - art_stopwords
-    ca_words = set(c_art_norm.split()) - art_stopwords
+    
+    ta_words = set(t_art_clean.split()) - art_stopwords
+    ca_words = set(c_art_clean.split()) - art_stopwords
     raw_words = set(raw_norm.split()) - art_stopwords
     if q_norm:
         raw_words.update(set(q_norm.split()) - art_stopwords)
@@ -565,7 +607,17 @@ def is_matching_song(cand_title: str, cand_artist: str, cand_dur: float | None,
     artist_matches = False
     art_score = 0.0
 
-    if ca_words and (ca_words & raw_words):
+    ca_spaceless = c_art_clean.replace(" ", "")
+    ta_spaceless = t_art_clean.replace(" ", "")
+    raw_spaceless = raw_norm.replace(" ", "")
+
+    if ca_spaceless and len(ca_spaceless) >= 3 and (ca_spaceless in raw_spaceless or raw_spaceless in ca_spaceless):
+        artist_matches = True
+        art_score += 40.0
+    elif ca_spaceless and ta_spaceless and len(ca_spaceless) >= 3 and (ca_spaceless in ta_spaceless or ta_spaceless in ca_spaceless):
+        artist_matches = True
+        art_score += 40.0
+    elif ca_words and (ca_words & raw_words):
         artist_matches = True
         art_score += 40.0
     elif ta_words and ca_words:
@@ -575,7 +627,15 @@ def is_matching_song(cand_title: str, cand_artist: str, cand_dur: float | None,
         elif is_channel_label:
             art_score += 10.0
         else:
-            art_score -= 25.0
+            art_score -= 45.0
+            if not exact_title:
+                return False, 0.0
+
+    # If title is very short (1-2 words), require artist match or exact duration
+    target_base_title = target_title or query or ""
+    if not artist_matches and len(target_base_title.split()) <= 2:
+        if not target_dur or not cand_dur or abs(cand_dur - target_dur) > 3.0:
+            art_score -= 40.0
             if not exact_title:
                 return False, 0.0
 
@@ -606,7 +666,8 @@ def is_matching_song(cand_title: str, cand_artist: str, cand_dur: float | None,
     if exact_title:
         score += 25.0
 
-    return True, score
+    # Ensure a baseline quality threshold (avoids accepting completely unrelated tracks)
+    return score >= 45.0, score
 
 
 # --- Free Source 1: LRCLIB (verified synced lyrics database) ----------------
@@ -660,8 +721,8 @@ def fetch_lrclib(title: str, artist: str = "", duration: float | None = None,
     search_queries = get_candidate_queries(title, artist, query=query)
     best_plain = None
 
-    # Search top 2 queries max to guarantee ultra-fast response (< 0.8s)
-    for sq in search_queries[:2]:
+    # Search top 4 queries max to guarantee ultra-fast response (< 0.8s)
+    for sq in search_queries[:4]:
         try:
             url = "https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": sq})
             req = urllib.request.Request(url, headers=headers)
@@ -684,26 +745,30 @@ def fetch_lrclib(title: str, artist: str = "", duration: float | None = None,
                 )
                 if ok:
                     raw_txt = it.get("syncedLyrics") or it.get("plainLyrics") or ""
-                    # Prefer Romanized / Hinglish lyrics over non-Latin Indic script
-                    if raw_txt and not any("\u0900" <= c <= "\u0d7f" for c in raw_txt):
-                        score += 35.0
-                    if it.get("syncedLyrics"):
+                    # Do not penalize Devanagari/Indic scripts, as we auto-transliterate them to Hinglish later.
+                    diff = abs(cand_dur - duration) if duration and cand_dur else 0
+
+                    # ONLY accept synced lyrics if the duration perfectly matches (within 4 seconds)
+                    # Otherwise, the .lrc timestamps will not sync 1:1 with the audio!
+                    if it.get("syncedLyrics") and diff <= 4.0:
                         valid_synced.append((score, it))
-                    elif it.get("plainLyrics"):
-                        valid_plain.append((score, it))
+                    elif not synced_only:
+                        if it.get("plainLyrics"):
+                            if not best_plain or score > best_plain[0]:
+                                best_plain = (score, it["plainLyrics"])
+                        elif it.get("syncedLyrics"):
+                            # If it only has synced, we can strip the timestamps to make it plain
+                            if not best_plain or score > best_plain[0]:
+                                best_plain = (score, it["syncedLyrics"])
 
             if valid_synced:
                 valid_synced.sort(key=lambda x: x[0], reverse=True)
                 return parse_lrc(valid_synced[0][1]["syncedLyrics"])
-
-            if not synced_only and valid_plain and best_plain is None:
-                valid_plain.sort(key=lambda x: x[0], reverse=True)
-                best_plain = valid_plain[0][1]["plainLyrics"]
         except Exception:
             pass
 
     if not synced_only and best_plain:
-        return format_plain_lyrics(best_plain)
+        return format_plain_lyrics(best_plain[1])
 
     return []
 
@@ -722,7 +787,7 @@ def fetch_ytdlp(url: str, timeout: int = 15) -> list[dict]:
         try:
             subprocess.run(
                 [ytdl, "--skip-download", "--write-subs", "--write-auto-subs",
-                 "--sub-langs", "en.*,en,all,-live_chat",
+                 "--sub-langs", "hi-orig,hi,pa,ur,es,fr,en,en.*,-live_chat",
                  "--sub-format", "vtt", "-o", out, url],
                 capture_output=True, text=True, timeout=timeout)
         except (subprocess.TimeoutExpired, Exception):
@@ -731,12 +796,17 @@ def fetch_ytdlp(url: str, timeout: int = 15) -> list[dict]:
         if not vtts:
             return []
         pref = None
-        for v in vtts:
-            name = v.name.lower()
-            if any(k in name for k in (".en.", "-en.", ".hi.", "-hi.", "orig", "english", "hindi")):
-                pref = v
+        # Prefer original / native languages first, then fallback to english
+        for pref_lang in [("orig",), (".hi.", "-hi.", "hindi", ".pa.", "punjabi", ".ur.", "urdu", ".es.", ".fr."), (".en.", "-en.", "english")]:
+            for v in vtts:
+                name = v.name.lower()
+                if any(k in name for k in pref_lang):
+                    pref = v
+                    break
+            if pref:
                 break
-        target_vtt = pref
+        
+        target_vtt = pref or vtts[0]
         if not target_vtt:
             return []
         try:
@@ -769,6 +839,7 @@ def fetch_genius(title: str, artist: str = "", duration: float | None = None,
                         h_artist = (hit_res.get("primary_artist") or {}).get("name") or ""
                         ok, _ = is_matching_song(h_title, h_artist, None, title, artist, duration, raw_title=title, query=query)
                         if ok:
+                            print(f"DEBUG: Genius matched! h_title={h_title!r}, h_artist={h_artist!r}, title={title!r}")
                             path = hit_res.get("path")
                             break
             if not path:
@@ -794,6 +865,41 @@ def fetch_genius(title: str, artist: str = "", duration: float | None = None,
 
 
 # --- Free Source 4: lyrics.ovh (open REST API) ------------------------------
+
+def fetch_jiosaavn(title: str, artist: str = "", duration: float | None = None,
+                   timeout: int = 2, query: str = "") -> list[dict]:
+    """Look up plain lyrics from JioSaavn (highly robust for Indian music)."""
+    search_queries = get_candidate_queries(title, artist, query=query)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for sq in search_queries[:3]:
+        try:
+            url = "https://www.jiosaavn.com/api.php?_format=json&__call=autocomplete.get&query=" + urllib.parse.quote(sq)
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode())
+            songs = data.get("songs", {}).get("data", [])
+            for s in songs[:4]:
+                sid = s.get("id")
+                h_title = s.get("title") or ""
+                h_artist = s.get("description") or ""
+                if not sid: continue
+                
+                # STRICT VERIFICATION: Do not accept unrelated songs!
+                ok, _ = is_matching_song(h_title, h_artist, None, title, artist, duration, raw_title=title, query=query)
+                if not ok:
+                    continue
+
+                l_url = f"https://www.jiosaavn.com/api.php?__call=lyrics.getLyrics&ctx=web6dot0&api_version=4&_format=json&_marker=0&lyrics_id={sid}"
+                l_req = urllib.request.Request(l_url, headers=headers)
+                with urllib.request.urlopen(l_req, timeout=timeout) as lr:
+                    ld = json.loads(lr.read().decode())
+                if ld.get("lyrics"):
+                    text = ld["lyrics"].replace("<br>", "\n").replace("<br/>", "\n")
+                    return format_plain_lyrics(text)
+        except Exception:
+            pass
+    return []
+
 
 def fetch_lyricsovh(title: str, artist: str = "", duration: float | None = None,
                     timeout: int = 2, query: str = "") -> list[dict]:
@@ -847,13 +953,19 @@ def fetch(url: str = "", timeout: int = 15, title: str = "", artist: str = "",
             _save_cached_lyrics(ck, lines)
             return lines
 
-    # 3. Genius plain lyrics (fast 2s timeout)
+    # 3. JioSaavn (huge Indian music database, plain lyrics)
+    lines = fetch_jiosaavn(title, artist, duration=duration, timeout=2, query=query)
+    if lines:
+        _save_cached_lyrics(ck, lines)
+        return lines
+
+    # 4. Genius plain lyrics (fast 2s timeout)
     lines = fetch_genius(title, artist, duration=duration, timeout=2, query=query)
     if lines:
         _save_cached_lyrics(ck, lines)
         return lines
 
-    # 4. lyrics.ovh plain lyrics (fast 2s timeout)
+    # 5. lyrics.ovh plain lyrics (fast 2s timeout)
     lines = fetch_lyricsovh(title, artist, duration=duration, timeout=2, query=query)
     if lines:
         _save_cached_lyrics(ck, lines)

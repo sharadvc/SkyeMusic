@@ -209,6 +209,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("similar", help="play tracks like a song (default: current)").add_argument(
         "song", nargs="*", default="")
     sub.add_parser("discover", help="play fresh tracks you haven't heard")
+    bc = sub.add_parser("broadcast", help="broadcast your session (Skyecast P2P)")
+    bc.add_argument("--name", help="custom broadcast name (e.g. sharad-lofi)", required=True)
+    jn = sub.add_parser("join", help="join a Skyecast P2P session")
+    jn.add_argument("name", help="name of the broadcast to join")
+    fc = sub.add_parser("focus", help="enter Focus OS (DND, Slack sync, play music)")
+    fc.add_argument("duration", type=int, nargs="?", default=60, help="duration in minutes (default 60)")
+    fc.add_argument("query", nargs="*", default=["lofi", "beats"], help="music to play (default: lofi beats)")
     q = sub.add_parser("queue", help="smart queue control")
     q.add_argument("action", nargs="?", default="status",
                    help="add | remove | move | shuffle | clear | smart")
@@ -310,6 +317,28 @@ def run(argv: list[str]) -> int:
         from .daemon import run as daemon_run
         daemon_run()
         return 0
+    if args.cmd == "broadcast":
+        ensure_daemon()
+        resp = send_cmd("remote")
+        port = (resp.get("data") or {}).get("port")
+        if not port:
+            print("tune: daemon not running or web player disabled", file=sys.stderr)
+            return 1
+        from .skyecast import start_broadcast
+        start_broadcast(args.name, port)
+        return 0
+    if args.cmd == "join":
+        ensure_daemon()
+        from .skyecast import join_broadcast
+        join_broadcast(args.name)
+        return 0
+    if args.cmd == "focus":
+        ensure_daemon()
+        from .focus import start_focus
+        query_str = " ".join(args.query) if getattr(args, "query", None) else "lofi beats"
+        dur = getattr(args, "duration", 60)
+        start_focus(query_str, dur)
+        return 0
     if args.cmd == "share":
         try:
             if args.queue:
@@ -344,17 +373,22 @@ def run(argv: list[str]) -> int:
                                 capture_output=True, text=True).stdout.strip()
             hostname = subprocess.run(["scutil", "--get", "LocalHostName"],
                                       capture_output=True, text=True).stdout.strip()
-            remote_url = f"http://{hostname}.local:{port}/" if hostname else (f"http://{ip}:{port}/" if ip else f"http://localhost:{port}/")
+            ip_url = f"http://{ip}:{port}/" if ip else ""
+            bonjour_url = f"http://{hostname}.local:{port}/" if hostname else ""
+            local_url = f"http://localhost:{port}/"
+            airdrop_target = ip_url or bonjour_url or local_url
+
             from .qr import render_qr
             from .airdrop import trigger_airdrop
             print("\n✦ Skye Mobile Web Remote ✦")
-            print(f"  Local URL:   http://localhost:{port}/")
-            print(f"  Bonjour URL: {remote_url}")
             if ip:
-                print(f"  Wi-Fi IP:    http://{ip}:{port}/")
+                print(f"  Wi-Fi IP (Direct Phone URL): {ip_url}")
+            if hostname:
+                print(f"  Bonjour URL:                 {bonjour_url}")
+            print(f"  Localhost URL:               {local_url}")
             print("\n📲 AirDrop Share Sheet opening for your iPhone...")
-            trigger_airdrop(remote_url)
-            print(render_qr(remote_url, compact=True))
+            trigger_airdrop(airdrop_target)
+            print(render_qr(airdrop_target, compact=True))
         except Exception as e:
             print(f"tune: {e}", file=sys.stderr)
             return 1

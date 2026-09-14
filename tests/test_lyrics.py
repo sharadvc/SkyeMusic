@@ -93,8 +93,8 @@ class TestCleanTrackInfo(unittest.TestCase):
 
     def test_lyrics_tag_and_channel_topic(self):
         title, artist = clean_track_info("Dil Ibaadat (Lyrics) - Krishnakumar Kunnath", "KK - Topic")
-        self.assertEqual(title, "Krishnakumar Kunnath")
-        self.assertEqual(artist, "Dil Ibaadat")
+        self.assertEqual(title, "Dil Ibaadat")
+        self.assertEqual(artist, "KK")
 
 
 class TestNoFakeLyrics(unittest.TestCase):

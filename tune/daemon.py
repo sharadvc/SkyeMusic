@@ -17,10 +17,13 @@ import shlex
 import shutil
 import signal
 import socketserver
+import ssl
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from typing import cast
 
@@ -1690,22 +1693,86 @@ class Daemon:
         return {"ok": True, "data": {"query": arg, "results": data}}
 
     def _h_suggest(self, arg: str) -> dict:
-        """Return up to 5 history titles/queries matching a prefix (for TUI auto-complete)."""
+        """Return up to 8 live autocomplete suggestions for the search query."""
         needle = str(arg).strip().lower()
         if not needle:
             return {"ok": True, "data": {"suggestions": []}}
-        seen: set[str] = set()
+
         out: list[str] = []
+        seen: set[str] = set()
+
+        # 1. Local history match
         for h in self._history:
             for key in (h.get("title"), h.get("query")):
-                key = str(key)
-                if needle in key.lower() and key not in seen:
-                    seen.add(key)
-                    out.append(key)
-                    break
-            if len(out) >= 5:
-                break
-        return {"ok": True, "data": {"suggestions": out}}
+                if key:
+                    k_str = str(key).strip()
+                    if needle in k_str.lower() and k_str.lower() not in seen:
+                        seen.add(k_str.lower())
+                        out.append(k_str)
+
+        # 2. Remote API Autocomplete (YouTube + JioSaavn)
+        ctx = None
+        try:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        except Exception:
+            pass
+
+        def _yt_sugg():
+            try:
+                url = "https://suggestqueries.google.com/complete/search?" + urllib.parse.urlencode({"client": "chrome", "q": needle})
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+                kw = {"timeout": 1.5}
+                if ctx: kw["context"] = ctx
+                with urllib.request.urlopen(req, **kw) as r:
+                    content = r.read().decode("utf-8", errors="ignore")
+                    data = json.loads(content)
+                    if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list):
+                        return [str(it).strip() for it in data[1]]
+            except Exception:
+                pass
+            return []
+
+        def _js_sugg():
+            try:
+                url = "https://www.jiosaavn.com/api.php?_format=json&__call=autocomplete.get&query=" + urllib.parse.quote(needle)
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                kw = {"timeout": 1.2}
+                if ctx: kw["context"] = ctx
+                with urllib.request.urlopen(req, **kw) as r:
+                    content = r.read().decode("utf-8", errors="ignore")
+                    data = json.loads(content)
+                    songs = data.get("songs", {}).get("data", [])
+                    res = []
+                    for s in songs:
+                        t = s.get("title", "").replace("&quot;", '"').replace("&amp;", "&")
+                        if t:
+                            res.append(t)
+                    return res
+            except Exception:
+                pass
+            return []
+
+        yt_res, js_res = [], []
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                f_yt = ex.submit(_yt_sugg)
+                f_js = ex.submit(_js_sugg)
+                try: yt_res = f_yt.result(timeout=0.9)
+                except Exception: pass
+                try: js_res = f_js.result(timeout=0.9)
+                except Exception: pass
+        except Exception:
+            pass
+
+        for item in yt_res + js_res:
+            if item and item.lower() not in seen:
+                seen.add(item.lower())
+                out.append(item)
+
+        return {"ok": True, "data": {"suggestions": out[:8]}}
 
     def _h_next(self, _arg: str = "") -> dict:
         with self._op_lock:
@@ -2030,9 +2097,12 @@ class Daemon:
                     if t.url == arg:
                         target_track = t
                         break
-            if not target_track:
+                if not target_track:
+                    return {"ok": False, "error": "requested track not found in queue"}
+            else:
                 target_track = now
-        url = arg or (target_track.url if target_track else "")
+                
+        url = target_track.url if target_track else ""
         if not url:
             return {"ok": False, "error": "no track playing"}
 
@@ -2109,14 +2179,20 @@ class Daemon:
         with self._lock:
             now = self.q.current()
             url = now.url if now else None
+
         if not url:
-            return {"ok": False, "error": "nothing playing"}
+            from .art import render_mascot
+            return {"ok": True, "data": {"lines": render_mascot(), "cached": False}}
+
         cached = self._art_cache.get(url)
         if cached is not None:
             return {"ok": True, "data": {"lines": cached, "cached": True}}
+
         lines = render_art(url)
         if not lines:
-            return {"ok": False, "error": "could not fetch album art"}
+            from .art import render_mascot
+            lines = render_mascot()
+
         with self._lock:
             self._art_cache[url] = lines
             if len(self._art_cache) > self._cache_max:
@@ -2311,10 +2387,14 @@ class Daemon:
             self.q.save()
         return {"ok": True, "data": {"shuffle": self.q.shuffle}}
 
-    def _h_repeat(self, arg: str) -> dict:
-        if arg not in ("all", "one", "off"):
-            return {"ok": False, "error": "repeat must be all|one|off"}
+    def _h_repeat(self, arg: str = "") -> dict:
+        arg = arg.strip().lower()
         with self._lock:
+            if not arg or arg == "cycle":
+                cycle_map = {"off": "all", "all": "one", "one": "off"}
+                arg = cycle_map.get(self.q.repeat, "all")
+            elif arg not in ("all", "one", "off"):
+                return {"ok": False, "error": "repeat must be all|one|off"}
             self.q.repeat = arg
             self.q.save()
         return {"ok": True, "data": {"repeat": arg}}

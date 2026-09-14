@@ -8,7 +8,10 @@ import {
   Mic,
   Pause,
   Play,
+  Repeat,
+  Repeat1,
   Search,
+  Shuffle,
   SkipBack,
   SkipForward,
   Volume2,
@@ -202,11 +205,20 @@ export default function App() {
               </div>
             </div>
 
-            <div className="mt-5 flex items-center justify-center gap-6">
+            <div className="mt-5 flex items-center justify-center gap-3">
+              <Button
+                variant={status.shuffle ? "default" : "ghost"}
+                size="icon"
+                className={cn("size-10", status.shuffle && "bg-emerald-500 text-zinc-950 hover:bg-emerald-400 shadow-md shadow-emerald-500/30")}
+                onClick={() => act("shuffle")}
+                aria-label="Shuffle"
+              >
+                <Shuffle className="size-5" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-13"
+                className="size-11"
                 onClick={() => act("prev")}
                 aria-label="Previous"
               >
@@ -214,7 +226,7 @@ export default function App() {
               </Button>
               <Button
                 size="icon"
-                className="size-17 rounded-full shadow-lg shadow-primary/30"
+                className="size-16 rounded-full shadow-lg shadow-primary/30"
                 onClick={() => act("toggle")}
                 aria-label="Play / pause"
               >
@@ -227,11 +239,24 @@ export default function App() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-13"
+                className="size-11"
                 onClick={() => act("next")}
                 aria-label="Next"
               >
                 <SkipForward className="size-6" />
+              </Button>
+              <Button
+                variant={status.repeat && status.repeat !== "off" ? "default" : "ghost"}
+                size="icon"
+                className={cn("size-10 relative", status.repeat && status.repeat !== "off" && "bg-emerald-500 text-zinc-950 hover:bg-emerald-400 shadow-md shadow-emerald-500/30")}
+                onClick={() => act("repeat")}
+                aria-label="Repeat"
+              >
+                {status.repeat === "one" ? (
+                  <Repeat1 className="size-5" />
+                ) : (
+                  <Repeat className="size-5" />
+                )}
               </Button>
             </div>
 

@@ -23,7 +23,7 @@ import tty
 
 from .client import send_cmd
 
-_STATE_MARK = {"playing": "⚔️", "paused": "🗡️", "loading": "⚡", "idle": "👺"}
+_STATE_MARK = {"playing": "⚔", "paused": "🗡", "loading": "⚡", "idle": "·"}
 _STATE_KAOMOJI = {
     "playing": "TOTAL FOCUS",
     "paused": "SHEATHED",
@@ -40,8 +40,43 @@ _BREATHING_TECHNIQUES = [
 
 
 _REPEAT_ORDER = ["off", "all", "one"]
-_SEARCH_LIMIT = 80
 _AMP_BLOCKS   = "▁▂▃▄▅▆▇█"
+
+
+def _display_width(s: str) -> int:
+    """Calculate exact visual terminal display width of a string in columns."""
+    w = 0
+    for ch in s:
+        cp = ord(ch)
+        if (0x1F300 <= cp <= 0x1F9FF or
+            0x2600 <= cp <= 0x27BF or
+            0x2B00 <= cp <= 0x2BFF or
+            0x3000 <= cp <= 0x9FFF or
+            0xFF00 <= cp <= 0xFFEF):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def _pad_to_width(text: str, target_w: int) -> str:
+    """Truncate or right-pad text so its visual terminal display width equals target_w."""
+    curr_w = 0
+    res = []
+    for ch in text:
+        cp = ord(ch)
+        ch_w = 2 if (
+            0x1F300 <= cp <= 0x1F9FF or
+            0x2600 <= cp <= 0x27BF or
+            0x2B00 <= cp <= 0x2BFF or
+            0x3000 <= cp <= 0x9FFF or
+            0xFF00 <= cp <= 0xFFEF
+        ) else 1
+        if curr_w + ch_w > target_w:
+            break
+        res.append(ch)
+        curr_w += ch_w
+    return "".join(res) + (" " * (target_w - curr_w))
 # ── Visualizer layout constants ──────────────────────────────────────────────
 _VIZ_ROWS  = 5   # number of rows the spectrum occupies (rows 4 … 4+VIZ_ROWS-1)
 _VIZ_ROW   = 4   # first row of the visualizer
@@ -97,24 +132,37 @@ def _load_theme() -> str:
         return "default"
 
 
-def _apply_theme(name: str) -> None:
+def _apply_theme(name: str, stdscr=None) -> None:
     """(Re)initialize the color pairs for a theme. Safe to call any time, so
     the whole screen re-themes live while the user browses the picker."""
     colors = _THEMES.get(name, _THEMES["default"])
     if not curses.has_colors():
         return
-    header, current, accent, error, title, list = colors
+    header, current, accent, error, title, list_col = colors
     curses.init_pair(1, header, -1)   # header bar
     curses.init_pair(2, current, -1)  # current track in the queue
     curses.init_pair(3, accent, -1)   # progress / time / meta / equalizer / input
     curses.init_pair(4, error, -1)    # errors / unavailable
     curses.init_pair(5, title, -1)    # now-playing title
-    curses.init_pair(6, list, -1)     # body text (queue / search / lyrics / help)
-_NOW_HELP = ("space pause · e eq · D download · M radio · tab layout · n/p next/prev · v viz · ↑/↓ select · d remove · enter jump · "
-             "+/- vol · [ ] speed · ←/→ seek · ,/. sync · l lyrics · s shuffle · r repeat · "
-             "t theme · / search · q quit")
+    curses.init_pair(6, list_col, -1) # body text (queue / search / lyrics / help)
+
+    # Pre-initialize stable theme swatch accent pairs for theme picker list
+    for idx, (tname, tcols) in enumerate(_THEMES.items()):
+        p_num = 10 + (idx % 50)
+        try:
+            curses.init_pair(p_num, tcols[2], -1)
+        except curses.error:
+            pass
+
+    if stdscr:
+        try:
+            stdscr.bkgd(" ", curses.color_pair(6))
+        except curses.error:
+            pass
+_NOW_HELP = ("space pause · P party mode · J DJ mode · e eq · D download · M radio · tab layout · n/p next/prev · v viz · ↑/↓ select · enter jump · +/- vol · ←/→ seek · l lyrics · t theme · / search · q quit")
 _SEARCH_HELP = "enter play · tab add to queue · ↑/↓ move · backspace edit · esc back"
-_VIZ_MODES = ("spectrum", "stereo", "wave", "bars", "matrix", "vu", "oscilloscope")
+_SEARCH_LIMIT = 200
+_VIZ_MODES = ("spectrum", "stereo", "wave", "bars", "matrix", "vu", "oscilloscope", "hyperdrive", "dna", "fire", "cyberpunk", "aurora")
 
 
 def _visualizer() -> str:
@@ -209,6 +257,12 @@ def _loop(stdscr) -> None:
             amp_t += dt * 0.4  # slow crawl while buffering
         # paused / idle: freeze the amplifier
 
+        # Party Mode: Dynamic RGB Light Show Theme Cycling
+        if ui.get("party_mode") and status.get("state") == "playing" and mode != "theme":
+            PARTY_THEMES = ["candy", "cyberpunk", "rengoku", "ultraviolet", "dracula", "zenitsu", "amber", "emerald", "tokyo"]
+            theme_idx = int(amp_t / 1.5) % len(PARTY_THEMES)
+            _apply_theme(PARTY_THEMES[theme_idx])
+
         # Real-time lyrics tracking: as soon as track changes, update lyrics instantly
         cur_url = status.get("url") or ""
         cur_track_id = cur_url
@@ -216,7 +270,7 @@ def _loop(stdscr) -> None:
             if cur_track_id != ui.get("lyr_fetched_track"):
                 ui["lyr_fetched_track"] = cur_track_id
                 ui["lyr_track_id"] = cur_track_id
-                if ui.get("layout") in ("studio", "lyrics") or ui.get("lyr_on"):
+                if ui.get("layout") in ("studio", "lyrics", "mini") or ui.get("lyr_on"):
                     _update_lyrics(ui, status)
                 else:
                     ui["lyr_url"] = cur_url
@@ -225,11 +279,11 @@ def _loop(stdscr) -> None:
                     ui["lyr_loading"] = False
                     ui["lyr_scroll"] = 0
 
-        # Safety guard: clear loading state if network or daemon worker takes > 7.0s
-        if ui.get("lyr_loading") and (now_t - ui.get("lyr_loading_t", now_t)) > 7.0:
+        # Safety guard: clear loading state if network or daemon worker takes > 12.0s
+        if ui.get("lyr_loading") and (now_t - ui.get("lyr_loading_t", now_t)) > 12.0:
             ui["lyr_loading"] = False
             if not ui.get("lyr_lines") and not ui.get("lyr_note"):
-                ui["lyr_note"] = "no lyrics found for this track"
+                ui["lyr_note"] = "searching lyrics..."
 
         # queue selection follows the current track until the user moves it
         if (mode in ("now", "filter") and ui["qsel_follow"] and not qfilter
@@ -243,6 +297,31 @@ def _loop(stdscr) -> None:
             smsg = sbucket.get("msg", "")
             ssel = 0
             sbucket = {}
+
+        # Auto-resize terminal window for mini player mode vs normal layout
+        is_mini_layout = (ui.get("layout") == "mini")
+        if is_mini_layout:
+            if not ui.get("_is_mini_resized"):
+                cur_h, cur_w = stdscr.getmaxyx()
+                if not ui.get("_orig_size") and (cur_h > 13 or cur_w > 72):
+                    ui["_orig_size"] = (cur_h, cur_w)
+                ui["_is_mini_resized"] = True
+                try:
+                    sys.stdout.write("\x1b[8;12;72t")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+        else:
+            if ui.get("_is_mini_resized"):
+                ui["_is_mini_resized"] = False
+                orig_size = ui.pop("_orig_size", None)
+                if orig_size:
+                    oh, ow = orig_size
+                    try:
+                        sys.stdout.write(f"\x1b[8;{oh};{ow}t")
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
 
         stdscr.erase()
         h, w = stdscr.getmaxyx()
@@ -272,6 +351,13 @@ def _loop(stdscr) -> None:
         if ui.pop("art", False):
             _show_art(stdscr)
         if mode == "quit":
+            if ui.get("_orig_size"):
+                oh, ow = ui["_orig_size"]
+                try:
+                    sys.stdout.write(f"\x1b[8;{oh};{ow}t")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
             _stop_on_quit()
             break
 
@@ -289,15 +375,19 @@ def _resolve_key(stdscr, ch: int) -> int:
     """
     if ch != 27:
         return ch
-    time.sleep(0.03)  # give any sequence bytes time to arrive
+    time.sleep(0.02)  # give any sequence bytes time to arrive
     nxt = stdscr.getch()
     if nxt == -1:
         return 27
+    if nxt in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
+        return nxt
     if nxt in (ord("["), ord("O")):
         fin = stdscr.getch()
+        if fin in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
+            return fin
         return {ord("A"): curses.KEY_UP, ord("B"): curses.KEY_DOWN,
                 ord("C"): curses.KEY_RIGHT, ord("D"): curses.KEY_LEFT}.get(fin, 27)
-    return 27
+    return nxt if nxt != -1 else 27
 
 
 def _bg_send(verb: str, arg: object = "") -> None:
@@ -333,16 +423,16 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     if ch == -1:
         return mode
 
-    # Tab key: cycle layouts (studio -> queue -> lyrics)
+    # Tab key: cycle layouts (studio -> queue -> lyrics -> mini)
     if ch == 9:
         cur_l = ui.get("layout", "studio")
-        order = ["studio", "queue", "lyrics"]
+        order = ["studio", "queue", "lyrics", "mini"]
         nxt_l = order[(order.index(cur_l) + 1) % len(order)] if cur_l in order else "studio"
         ui["layout"] = nxt_l
         ui["lyr_on"] = (nxt_l == "lyrics")
         ui["viz_toast"] = f"LAYOUT: {nxt_l.upper()}"
         ui["viz_toast_t"] = time.monotonic()
-        if nxt_l in ("studio", "lyrics"):
+        if nxt_l in ("studio", "lyrics", "mini"):
             cur_url = status.get("url") or ""
             cur_track_id = cur_url or status.get("title") or ""
             if (not ui.get("lyr_lines") and not ui.get("lyr_loading")) or cur_track_id != ui.get("lyr_fetched_track"):
@@ -450,10 +540,10 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         else:
             mode = "filter"
 
-    elif ch == curses.KEY_UP:
+    elif ch in (curses.KEY_UP, ord("k"), ord("K")):
         ui["qsel"] = max(0, ui["qsel"] - 1)
         ui["qsel_follow"] = False
-    elif ch == curses.KEY_DOWN:
+    elif ch in (curses.KEY_DOWN, ord("j")):
         ui["qsel"] = min(max(0, len(vis) - 1), ui["qsel"] + 1)
         ui["qsel_follow"] = False
     elif ch in (10, 13, curses.KEY_ENTER) and vis:
@@ -466,7 +556,11 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
             ui["viz_toast_t"] = time.monotonic()
         else:
             _bg_send("eq", "next")
-            ui["viz_toast"] = "✦ EQUALIZER PRESET CHANGED ✦"
+            EQ_PRESETS = ["bass_boost", "vocal", "treble", "electronic", "rock", "acoustic", "flat"]
+            cur_eq = ui.get("eq_preset", "flat")
+            nxt_eq = EQ_PRESETS[(EQ_PRESETS.index(cur_eq) + 1) % len(EQ_PRESETS)] if cur_eq in EQ_PRESETS else "bass_boost"
+            ui["eq_preset"] = nxt_eq
+            ui["viz_toast"] = f"✦ EQUALIZER: {nxt_eq.upper().replace('_', ' ')} ✦"
             ui["viz_toast_t"] = time.monotonic()
     elif ch in (ord("b"), ord("B")) and is_dj:
         _bg_send("dj", "bass")
@@ -480,8 +574,7 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         _bg_send("download")
         ui["viz_toast"] = "✦ DOWNLOADING AUDIO... ✦"
         ui["viz_toast_t"] = time.monotonic()
-    elif ch in (ord("j"), ord("J")):
-
+    elif ch == ord("J"):
         if is_dj:
             _bg_send("dj", "off")
             # Optimistic update: snap back to normal view immediately
@@ -494,11 +587,35 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
             ui["viz_toast"] = "🎧⚡ REAL DJ MODE ACTIVATED ✦"
         ui["viz_toast_t"] = time.monotonic()
 
+    elif ch == ord("P"):
+        if ui.get("party_mode"):
+            ui["party_mode"] = False
+            _apply_theme(_load_theme())
+            ui["viz_toast"] = "✦ PARTY MODE DISABLED ✦"
+        else:
+            ui["party_mode"] = True
+            ui["viz_mode"] = "hyperdrive"
+            _bg_send("eq", "bass_boost")
+            ui["viz_toast"] = "🎉⚡ FULL PARTY VIBE MODE ACTIVATED! 🔊🕺"
+        ui["viz_toast_t"] = time.monotonic()
 
     elif ch == ord("S"):
         _bg_send("dj", "scratch")
         ui["viz_toast"] = "🎧⚡ DJ SCRATCH FX ✦"
         ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("m"):
+        if ui.get("layout") == "mini":
+            ui["layout"] = "studio"
+            ui["viz_toast"] = "LAYOUT: STUDIO"
+        else:
+            ui["layout"] = "mini"
+            ui["viz_toast"] = "LAYOUT: MINI PLAYER"
+            cur_url = status.get("url") or ""
+            cur_track_id = cur_url or status.get("title") or ""
+            if (not ui.get("lyr_lines") and not ui.get("lyr_loading")) or cur_track_id != ui.get("lyr_fetched_track"):
+                _update_lyrics(ui, status)
+        ui["viz_toast_t"] = time.monotonic()
+
     elif ch == ord("M"):
         _bg_send("radio", "lofi")
         ui["viz_toast"] = "✦ SMART RADIO: LOFI MIX ✦"
@@ -509,7 +626,7 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         ui["qsel_follow"] = False
     elif ch == ord(" "):
         _bg_send("toggle")
-    elif ch in (ord("n"), ord("k")):
+    elif ch in (ord("n"), ord("N")):
         _bg_send("next")
         ui["qsel_follow"] = True
     elif ch == ord("p"):
@@ -740,11 +857,12 @@ def _show_art(stdscr) -> None:
     except Exception as e:
         err = str(e)
     curses.endwin()
+    print("\x1b[2J\x1b[H", end="")  # Clear screen and move to top-left
     if lines:
         print("\n".join(lines))
     else:
         print(f"tune: {err}")
-    print("\n(press any key to return)")
+    print("\n(press any key to return)", flush=True)
     try:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
@@ -757,6 +875,9 @@ def _show_art(stdscr) -> None:
 
 
 def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket):
+    sugg = (sbucket or {}).get("suggest") or []
+    sugg_sel = (sbucket or {}).get("sugg_sel", 0)
+
     if ch == -1:
         pass
     elif ch == 27:  # esc
@@ -765,36 +886,47 @@ def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket):
         else:
             mode = "now"
     elif ch in (10, 13, curses.KEY_ENTER):
-        q = _clean_query(sq)
         if sresults and not ssearching:
             _play_url(sresults[ssel]["url"])
             mode = "now"
-        elif q and not ssearching:
-            _start_search(q, sbucket)
-            ssearching, smsg, sresults, ssel = True, "", [], 0
-    elif ch == 9:  # tab
-        if sresults and not ssearching:
-            _add_url(sresults[ssel]["url"])  # add selected result to queue
         else:
-            sugg = sbucket.get("suggest") or []
-            if sugg:  # autofill the query from the top suggestion
-                sq = sugg[0]
+            if not sresults and sugg:
+                idx = max(0, min(len(sugg) - 1, sugg_sel))
+                sq = sugg[idx]
+            q = _clean_query(sq)
+            if q and not ssearching:
+                _start_search(q, sbucket)
+                ssearching, smsg, sresults, ssel = True, "", [], 0
+    elif ch in (9, curses.KEY_RIGHT):  # TAB or Right Arrow autofills query!
+        if sresults and not ssearching and ch == 9:
+            _add_url(sresults[ssel]["url"])  # Tab adds selected result to queue
+        else:
+            if sugg:
+                idx = max(0, min(len(sugg) - 1, sugg_sel))
+                sq = sugg[idx]
                 sresults, ssel = [], 0
                 _start_suggest(sq, sbucket)
     elif ch in (curses.KEY_BACKSPACE, 127, 8):
         sq = sq[:-1]
+        if sbucket is not None:
+            sbucket["sugg_sel"] = 0
         _start_suggest(sq, sbucket)
     elif ch in (curses.KEY_DOWN,):
         if sresults:
             ssel = min(len(sresults) - 1, ssel + 1)
+        elif sugg and sbucket is not None:
+            sbucket["sugg_sel"] = min(len(sugg) - 1, sugg_sel + 1)
     elif ch in (curses.KEY_UP,):
         if sresults:
             ssel = max(0, ssel - 1)
+        elif sugg and sbucket is not None:
+            sbucket["sugg_sel"] = max(0, sugg_sel - 1)
     elif 32 <= ch < 127:
-        # every printable char types — the search box owns the keyboard
         if len(sq) < _SEARCH_LIMIT:
             sq += chr(ch)
-            sresults, ssel = [], 0  # query changed; old results are stale
+            sresults, ssel = [], 0
+            if sbucket is not None:
+                sbucket["sugg_sel"] = 0
             _start_suggest(sq, sbucket)
     return mode, sq, sresults, ssel, ssearching, smsg, sbucket
 
@@ -879,6 +1011,12 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
           theme_sel: int = 0, theme_names: list | None = None,
           qfilter: str = "", sbucket: dict | None = None) -> None:
     _draw_header(stdscr, status, w, amp_t)
+
+    layout = ui.get("layout", "studio")
+    if layout == "mini" and mode in ("now", "filter", "cmd"):
+        _draw_mini_player(stdscr, status, ui, h, w, amp_t)
+        return
+
     # In DJ mode the deck takes over the full screen below the header (row 4..h-2)
     is_dj = bool(status.get("dj_mode"))
     viz_h = (h - 5) if is_dj else _viz_height(h, mode)
@@ -890,10 +1028,19 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         sep_row = 4
         content_top = 4
 
+    # Clear content pane background to guarantee universal theme coverage
+    if not is_dj and layout != "mini":
+        for r in range(content_top, max(content_top + 1, h - 1)):
+            try:
+                stdscr.addstr(r, 0, " " * max(0, w - 2), curses.color_pair(6))
+            except curses.error:
+                pass
 
     # Determine whether Dual-Pane Studio layout is active
-    layout = ui.get("layout", "studio")
-    is_split = (mode in ("now", "filter", "cmd") and w >= 80 and layout == "studio")
+    is_split = (mode in ("now", "filter", "cmd") and (
+        (w >= 80 and layout == "studio") or
+        (w >= 50 and (layout == "lyrics" or ui.get("lyr_on")))
+    ))
     left_w = int(w * 0.46) if is_split else w
     right_w = (w - left_w - 1) if is_split else 0
 
@@ -903,7 +1050,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         err = status.get("error")
         if err:
             try:
-                stdscr.addstr(sep_row, 0, (f" ✖ {err}")[:w - 1], curses.color_pair(4) | curses.A_BOLD)
+                stdscr.addstr(sep_row, 0, (f" ✖ {err}")[:max(1, w - 2)], curses.color_pair(4) | curses.A_BOLD)
             except curses.error:
                 pass
         elif is_split:
@@ -939,7 +1086,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             right_fill = max(0, right_w - len(right_tag))
             right_bar = (right_tag + "─" * right_fill)[:right_w]
 
-            full_sep = (left_bar + "┬" + right_bar)[:w - 1]
+            full_sep = (left_bar + "┬" + right_bar)[:max(1, w - 2)]
             try:
                 stdscr.addstr(sep_row, 0, full_sep, curses.color_pair(1))
             except curses.error:
@@ -949,6 +1096,8 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             toast_t = ui.get("viz_toast_t", 0.0)
             if toast and (time.monotonic() - toast_t) < 1.8:
                 label = f"✦ {toast.upper()} ✦"
+            elif mode == "theme":
+                label = "🎨 THEME SELECTOR"
             elif qfilter:
                 label = f"QUEUE  ·  filter: {qfilter}"
             elif layout == "lyrics" or ui.get("lyr_on"):
@@ -962,14 +1111,13 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
                 label = f"QUEUE  ·  {cur_m.upper()}"
             sep = f" {label} " + "─" * max(0, w - len(label) - 3)
             try:
-                stdscr.addstr(sep_row, 0, sep[:w - 1], curses.color_pair(1))
+                stdscr.addstr(sep_row, 0, sep[:max(1, w - 2)], curses.color_pair(1))
             except curses.error:
                 pass
 
     if mode == "search":
         _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg, sbucket, top=content_top)
     elif mode == "theme":
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top)
         _draw_theme_picker(stdscr, h, w, theme_sel, theme_names or list(_THEMES), top=content_top)
         try:
             stdscr.addstr(h - 1, 0, "↑/↓ browse (live) · enter apply · esc cancel"[:w - 1],
@@ -1014,7 +1162,15 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             except curses.error:
                 pass
     elif layout == "lyrics" or (ui.get("lyr_on") and layout != "studio"):
-        _draw_lyrics(stdscr, status, ui, h, w, top=content_top)
+        l_w = int(w * 0.46)
+        r_w = max(1, w - l_w - 1)
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=l_w)
+        for r in range(content_top, max(content_top + 1, h - 1)):
+            try:
+                stdscr.addstr(r, l_w, "│", curses.color_pair(1))
+            except curses.error:
+                pass
+        _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=l_w + 1, max_w=r_w)
         try:
             stdscr.addstr(h - 1, 0, ("space pause · tab layout · n/p next/prev · v viz · +/- vol · "
                                      "l/esc back · q quit")[:w - 1],
@@ -1047,10 +1203,22 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
                  left: int = 0, max_w: int | None = None) -> None:
     """Karaoke-style lyrics pane with zero-latency audio clock interpolation,
     vocal cadence modeling, intro countdown, and live sync offset."""
+    if left <= 0:
+        split_w = int(w * 0.46) if w >= 50 else (w // 2)
+        left = split_w + 1
+        if max_w is None:
+            max_w = max(1, w - left - 1)
     window = max(0, (h - 3) - top)
     if window <= 0:
         return
-    avail_w = max(1, min(max_w if max_w is not None else w, w - left - 1))
+    avail_w = max(1, min(max_w - 1 if max_w is not None else (w - left - 2), w - left - 2))
+
+    # Explicitly clear lyrics pane area to prevent leftover artifacts from previous frames
+    for r in range(top, top + window):
+        try:
+            stdscr.addstr(r, left, " " * avail_w, curses.color_pair(6))
+        except curses.error:
+            pass
     if ui.get("lyr_loading"):
         try:
             stdscr.addstr(top, left, "  loading lyrics…"[:avail_w], curses.color_pair(6) | curses.A_DIM)
@@ -1133,7 +1301,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
                         pulse = int((time.monotonic() * 2.0) % 3)
                         p_str = " ·" * (pulse + 1)
                         col_p = left + len(text_disp) + 1
-                        if col_p + len(p_str) < avail_w:
+                        if col_p + len(p_str) < (left + avail_w):
                             stdscr.addstr(row, col_p, p_str, curses.color_pair(5) | curses.A_DIM)
                 except curses.error:
                     pass
@@ -1431,7 +1599,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
     state = status.get("state", "idle")
     vol = status.get("volume", 80) if status.get("volume") is not None else 80
     amp = min(1.0, 0.35 + (vol / 160.0))
-    aw = max(1, w - 1)
+    aw = max(1, w - 2)
 
     # ── State 1: IDLE (ambient breathing wave) ──────────────────────────
     if state == "idle":
@@ -1583,7 +1751,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
             pad_l = max(0, center_x - len(l_str) - 2)
             div = " ▌▐ " if r == 0 else (" ║ " if r == 1 else " │ ")
-            full_line = (" " * pad_l) + l_str + div + r_str
+            full_line = ((" " * pad_l) + l_str + div + r_str).ljust(aw)[:aw]
 
             if is_paused:
                 attr = curses.color_pair(6) | curses.A_DIM
@@ -1720,7 +1888,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 if is_paused:
                     attr = curses.color_pair(6) | curses.A_DIM
                 try:
-                    stdscr.addstr(row_idx, 0, text[:aw], attr)
+                    stdscr.addstr(row_idx, 0, text.ljust(aw)[:aw], attr)
                 except curses.error:
                     pass
         return
@@ -1765,6 +1933,168 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
             attr = (curses.color_pair(3) | curses.A_BOLD) if not is_paused else (curses.color_pair(6) | curses.A_DIM)
             try:
                 stdscr.addstr(row_idx, 0, line[:aw], attr)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: HYPERDRIVE (3D Retrowave Warp Starfield) ─────────────────
+    if mode == "hyperdrive":
+        beat = max(0.0, math.sin(amp_t * 2.8 * math.pi)) ** 3.0
+        speed = (amp_t * (4.0 + beat * 8.0))
+        grid = [[" " for _ in range(aw)] for _ in range(viz_h)]
+        attrs = [[curses.color_pair(6) for _ in range(aw)] for _ in range(viz_h)]
+        cx, cy = aw / 2.0, viz_h / 2.0
+        num_stars = min(80, aw)
+        STAR_CHARS = [".", "·", "•", "*", "+", "✦", "★"]
+        for s in range(num_stars):
+            angle = (s * 137.5 * math.pi / 180.0)
+            r = ((speed + s * 1.7) % 20.0)
+            x = int(cx + math.cos(angle) * r * (aw / 40.0))
+            y = int(cy + math.sin(angle) * r * (viz_h / 20.0))
+            if 0 <= y < viz_h and 0 <= x < aw:
+                idx = min(len(STAR_CHARS) - 1, int((r / 20.0) * len(STAR_CHARS)))
+                grid[y][x] = STAR_CHARS[idx]
+                if idx >= 4 and not is_paused:
+                    attrs[y][x] = curses.color_pair(5) | curses.A_BOLD
+                elif idx >= 2:
+                    attrs[y][x] = curses.color_pair(2) | curses.A_BOLD
+                else:
+                    attrs[y][x] = curses.color_pair(3) | curses.A_DIM
+        for r in range(viz_h):
+            row_idx = viz_top + r
+            try:
+                for c in range(aw):
+                    stdscr.addch(row_idx, c, grid[r][c], attrs[r][c])
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: DNA (3D Rotating Double-Helix Strand) ────────────────────
+    if mode == "dna":
+        phase = amp_t * 2.2
+        beat = max(0.0, math.cos(amp_t * 2.1 * math.pi)) ** 2.5
+        grid = [[" " for _ in range(aw)] for _ in range(viz_h)]
+        attrs = [[curses.color_pair(6) for _ in range(aw)] for _ in range(viz_h)]
+        for x in range(aw):
+            v1 = math.sin(phase + x * 0.18)
+            v2 = math.sin(phase + x * 0.18 + math.pi)
+            y1 = int(round((v1 * 0.42 * amp + 0.5) * (viz_h - 1)))
+            y2 = int(round((v2 * 0.42 * amp + 0.5) * (viz_h - 1)))
+            y1 = max(0, min(viz_h - 1, y1))
+            y2 = max(0, min(viz_h - 1, y2))
+            
+            if x % 3 == 0:
+                ymin, ymax = min(y1, y2), max(y1, y2)
+                for ry in range(ymin + 1, ymax):
+                    grid[ry][x] = "│" if abs(v1) > 0.3 else "┆"
+                    attrs[ry][x] = curses.color_pair(3) | curses.A_DIM
+            
+            grid[y1][x] = "◆" if beat > 0.5 else "●"
+            attrs[y1][x] = curses.color_pair(1) | curses.A_BOLD if not is_paused else curses.color_pair(6)
+            grid[y2][x] = "◈" if beat > 0.5 else "○"
+            attrs[y2][x] = curses.color_pair(2) | curses.A_BOLD if not is_paused else curses.color_pair(6)
+
+        for r in range(viz_h):
+            row_idx = viz_top + r
+            try:
+                for c in range(aw):
+                    stdscr.addch(row_idx, c, grid[r][c], attrs[r][c])
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: FIRE (Demoscene Flame Equalizer) ──────────────────────────
+    if mode == "fire":
+        beat = max(0.0, math.sin(amp_t * 2.5 * math.pi)) ** 3.0
+        FIRE_CHARS = [" ", "░", "▒", "▓", "█", "▲"]
+        for r in range(viz_h - 1, -1, -1):
+            row_idx = viz_top + (viz_h - 1 - r)
+            row_chars = []
+            for x in range(aw):
+                h_val = (math.sin(amp_t * 4.2 + x * 0.22) * 0.35 +
+                         math.cos(amp_t * 6.5 - x * 0.15) * 0.25 + 0.45)
+                h_val = min(1.0, max(0.05, (h_val * 0.7 + beat * 0.3) * amp))
+                threshold = (r / max(1, viz_h))
+                if h_val >= threshold:
+                    intensity = int(((h_val - threshold) / max(0.01, 1.0 - threshold)) * (len(FIRE_CHARS) - 1))
+                    cell = FIRE_CHARS[min(len(FIRE_CHARS) - 1, max(1, intensity))]
+                else:
+                    cell = " "
+                row_chars.append(cell)
+            line = "".join(row_chars)[:aw]
+
+            if is_paused:
+                attr = curses.color_pair(6) | curses.A_DIM
+            elif r == viz_h - 1 and viz_h > 2:
+                attr = curses.color_pair(5) | curses.A_BOLD
+            elif r >= viz_h // 2:
+                attr = curses.color_pair(4) | curses.A_BOLD
+            else:
+                attr = curses.color_pair(1)
+            try:
+                stdscr.addstr(row_idx, 0, line, attr)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: CYBERPUNK (Retrowave Horizon & Retrowave Sun) ─────────────
+    if mode == "cyberpunk":
+        grid_row = max(1, viz_h // 2)
+        for r in range(viz_h):
+            row_idx = viz_top + r
+            if r < grid_row:
+                sun_r = grid_row - 1 - r
+                sun_w = int(max(0, 14 - sun_r * 4))
+                if sun_w > 0:
+                    sun_str = "▀" * sun_w
+                    left_pad = max(0, (aw - sun_w) // 2)
+                    line = (" " * left_pad + sun_str).ljust(aw)[:aw]
+                    attr = curses.color_pair(4) | curses.A_BOLD if not is_paused else curses.color_pair(6) | curses.A_DIM
+                else:
+                    line = " " * aw
+                    attr = curses.color_pair(6)
+            elif r == grid_row:
+                line = ("─" * aw)[:aw]
+                attr = curses.color_pair(5) | curses.A_BOLD if not is_paused else curses.color_pair(6)
+            else:
+                shift = int((amp_t * 6.0) % 4)
+                grid_chars = []
+                for x in range(aw):
+                    if (x + shift) % 6 == 0:
+                        grid_chars.append("┼")
+                    else:
+                        grid_chars.append("─")
+                line = "".join(grid_chars)[:aw]
+                attr = curses.color_pair(1) | curses.A_BOLD if not is_paused else curses.color_pair(6) | curses.A_DIM
+            try:
+                stdscr.addstr(row_idx, 0, line, attr)
+            except curses.error:
+                pass
+        return
+
+    # ── MODE: AURORA (Quantum Fluid Braille Wave) ───────────────────────
+    if mode == "aurora":
+        BRAILLE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        for r in range(viz_h):
+            row_idx = viz_top + r
+            row_chars = []
+            for x in range(aw):
+                v = (math.sin(amp_t * 2.8 + x * 0.15 + r * 0.8) * 0.4 +
+                     math.cos(amp_t * 4.2 - x * 0.08 + r * 0.5) * 0.4 + 0.5)
+                v = min(1.0, max(0.0, v * amp))
+                b_idx = int(v * (len(BRAILLE) - 1))
+                row_chars.append(BRAILLE[b_idx])
+            line = "".join(row_chars)[:aw]
+            if is_paused:
+                attr = curses.color_pair(6) | curses.A_DIM
+            elif r == 0:
+                attr = curses.color_pair(2) | curses.A_BOLD
+            elif r == viz_h - 1:
+                attr = curses.color_pair(1) | curses.A_BOLD
+            else:
+                attr = curses.color_pair(3)
+            try:
+                stdscr.addstr(row_idx, 0, line, attr)
             except curses.error:
                 pass
         return
@@ -1871,7 +2201,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 row_str.append(" " * gap)
                 col_offset += gap
 
-        full_row = "".join(row_str)[:aw]
+        full_row = ("".join(row_str)).ljust(aw)[:aw]
         try:
             stdscr.addstr(row_idx, 0, full_row, attr_bar)
             if not is_paused:
@@ -1894,7 +2224,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
 def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     """5-row header: brand bar · title+time · progress bar · meta · visualizer."""
-    W = w - 1   # safe write width
+    W = max(1, w - 2)   # safe write width (w - 2 prevents curses right-edge line wrap)
     state = status.get("state", "idle")
     mark  = _STATE_MARK.get(state, "·")
     label = _STATE_KAOMOJI.get(state, state.upper())
@@ -1922,7 +2252,7 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     except curses.error:
         pass
     try:
-        stdscr.addstr(1, max(0, W - len(time_str)), time_str, curses.color_pair(3))
+        stdscr.addstr(1, max(0, W - len(time_str)), time_str[:W], curses.color_pair(3))
     except curses.error:
         pass
 
@@ -1936,7 +2266,7 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     if 0 < filled < bw:
         bar = bar[:filled - 1] + "●" + bar[filled:]
     try:
-        stdscr.addstr(2, 0, "▕" + bar[:bw] + "▏", curses.color_pair(3))
+        stdscr.addstr(2, 0, ("▕" + bar[:bw] + "▏")[:W], curses.color_pair(3))
     except curses.error:
         pass
 
@@ -1985,6 +2315,13 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
     if page <= 0:
         return
     avail_w = max(1, min(max_w if max_w is not None else w, w - left - 1))
+
+    # Explicitly clear queue pane area to prevent leftover artifacts from previous frames
+    for r in range(top, bottom):
+        try:
+            stdscr.addstr(r, left, " " * avail_w, curses.color_pair(6))
+        except curses.error:
+            pass
     if not vis:
         empty_msg = ("  (queue is empty  ·  / to search)" if not qfilter else f"  (no tracks matching '{qfilter}')")
         try:
@@ -2038,54 +2375,315 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
                     pass
 
 
-def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str], top: int = 4) -> None:
+def _draw_mini_player(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.0) -> None:
+    """Render a compact, centered mini-player card with closed borders, key playback details, live lyrics preview, micro visualizer, and meta indicators."""
+    card_h = 9
+    card_w = min(74, max(42, w - 4))
+    
+    top = max(1, (h - card_h) // 2)
+    left = max(1, (w - card_w) // 2)
+
+    state = status.get("state", "idle")
+    mark  = _STATE_MARK.get(state, "·")
+    label = _STATE_KAOMOJI.get(state, state.upper())
+    title = status.get("title") or "— nothing playing —"
+    pos_s = _fmt_time(status.get("position"))
+    dur   = status.get("duration")
+    dur_s = _fmt_time(dur)
+    
+    inner_w = card_w - 4
+
+    # 1. Clear background safely
+    for r in range(0, max(1, h - 1)):
+        try:
+            stdscr.addstr(r, 0, " " * max(0, w - 2), curses.color_pair(6))
+        except curses.error:
+            pass
+
+    # 2. Box Border Top: ╭────────────╮
+    border_top = f"╭{'─' * (card_w - 2)}╮"
     try:
-        stdscr.addstr(top, 0, " Theme  ·  ↑/↓ browse (live) · enter apply · esc cancel"[: w - 1],
+        stdscr.addstr(top, left, border_top, curses.color_pair(1) | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # 3. Header Row: │ ♪ Skye Mini Player           ⚔ TOTAL FOCUS │
+    head_left = "♪ Skye Mini Player"
+    head_right = f"{mark} {label}"
+    head_vw_left = _display_width(head_left)
+    head_vw_right = _display_width(head_right)
+    pad_len = max(0, inner_w - head_vw_left - head_vw_right)
+    head_text = f"{head_left}{' ' * pad_len}{head_right}"
+    head_line = f"│ {_pad_to_width(head_text, inner_w)} │"
+    try:
+        stdscr.addstr(top + 1, left, head_line, curses.color_pair(1) | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # 4. Divider: ├────────────┤
+    div_line = f"├{'─' * (card_w - 2)}┤"
+    try:
+        stdscr.addstr(top + 2, left, div_line, curses.color_pair(1))
+    except curses.error:
+        pass
+
+    # 5. Track Title + Time: │ Song Title                    [01:32 / 04:25] │
+    time_str = f"[{pos_s} / {dur_s}]"
+    time_vw  = _display_width(time_str)
+    title_avail_w = max(1, inner_w - time_vw - 1)
+    t_text   = _pad_to_width(title, title_avail_w).rstrip()
+    t_vw     = _display_width(t_text)
+    t_pad    = max(0, inner_w - t_vw - time_vw)
+    t_text_line = f"{t_text}{' ' * t_pad}{time_str}"
+    t_line   = f"│ {_pad_to_width(t_text_line, inner_w)} │"
+    try:
+        stdscr.addstr(top + 3, left, t_line, curses.color_pair(5) | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # 6. Progress Bar: │ ▕━━━━━━━━━━━━━●───────────────────────────▏ │
+    frac   = (status.get("position") or 0) / dur if dur else 0.0
+    frac   = min(1.0, max(0.0, frac))
+    bw     = max(1, inner_w - 2)
+    filled = int(bw * frac)
+    bar    = "━" * filled + "─" * (bw - filled)
+    if 0 < filled < bw:
+        bar = bar[:filled - 1] + "●" + bar[filled:]
+    p_str  = f"▕{bar[:bw]}▏"
+    p_line = f"│ {_pad_to_width(p_str, inner_w)} │"
+    try:
+        stdscr.addstr(top + 4, left, p_line, curses.color_pair(3))
+    except curses.error:
+        pass
+
+    # 7. Live 1-line Karaoke Lyrics preview: │ ♫ "Live lyric text..." │
+    lyr_str = ""
+    lines = ui.get("lyr_lines", [])
+    pos = _get_live_position(status, ui)
+    if ui.get("lyr_loading"):
+        lyr_str = "♫ loading lyrics…"
+    elif lines:
+        is_synced = any(ln.get("synced", True) and ln.get("start") is not None for ln in lines)
+        if is_synced:
+            cur = _cur_lyr_line(status, ui, pos=pos)
+            if cur == -1:
+                first_s = lines[0].get("start", 0.0)
+                rem = max(0.0, first_s - pos)
+                pulse_idx = int((time.monotonic() * 2.5) % 3)
+                dots = "● " * (pulse_idx + 1) + "○ " * (2 - pulse_idx)
+                lyr_str = f"♫ [INTRO] vocals in {int(round(rem))}s {dots.strip()}"
+            else:
+                lyr_str = f"♫ \"{lines[cur].get('text', '')}\""
+        else:
+            lyr_str = f"♫ \"{lines[0].get('text', '')}\""
+    else:
+        note = ui.get("lyr_note") or "no synced lyrics"
+        lyr_str = f"♫ ({note})"
+
+    l_line = f"│ {_pad_to_width(lyr_str, inner_w)} │"
+    try:
+        stdscr.addstr(top + 5, left, l_line, curses.color_pair(4) | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # 8. Micro Visualizer (reacting to viz_mode & audio amplitude): │ ░▒▓█ Visualizer █▓▒░ │
+    is_playing = (state == "playing")
+    viz_m = (ui.get("viz_mode") or _visualizer()).lower()
+    
+    if not is_playing:
+        v_str = "·" * inner_w
+    elif "hyper" in viz_m or "star" in viz_m:
+        stars = [">", "•", "*", "o", "O", "*", "•", ">", "•", "*"]
+        offset = int(amp_t * 12)
+        v_str = "".join(stars[(x + offset) % len(stars)] for x in range(inner_w))
+    elif "dna" in viz_m or "helix" in viz_m:
+        dna_syms = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "∞", "╳"]
+        offset = int(amp_t * 8)
+        v_str = "".join(dna_syms[(x + offset) % len(dna_syms)] for x in range(inner_w))
+    elif "fire" in viz_m or "flame" in viz_m:
+        fire_blocks = [" ", "░", "▒", "▓", "█", "▲"]
+        f_chars = []
+        for x in range(inner_w):
+            v = (math.sin(amp_t * 5.0 + x * 0.4) * 0.45 + math.cos(amp_t * 7.2 - x * 0.3) * 0.45 + 0.5)
+            idx = int(max(0.0, min(1.0, v)) * (len(fire_blocks) - 1))
+            f_chars.append(fire_blocks[idx])
+        v_str = "".join(f_chars)
+    elif "cyber" in viz_m or "glitch" in viz_m:
+        cyber_blocks = ["⚡", "▓", "▒", "░", "⚡", "░", "▒", "▓"]
+        offset = int(amp_t * 10)
+        c_chars = []
+        c_vw = 0
+        idx_c = 0
+        while c_vw < inner_w:
+            blk = cyber_blocks[(idx_c + offset) % len(cyber_blocks)]
+            bw = _display_width(blk)
+            if c_vw + bw > inner_w:
+                break
+            c_chars.append(blk)
+            c_vw += bw
+            idx_c += 1
+        v_str = "".join(c_chars)
+    elif "matrix" in viz_m:
+        matrix_syms = ["0", "1", "0", "1", "0", "1", "█", "░"]
+        offset = int(amp_t * 14)
+        v_str = "".join(matrix_syms[(x * 3 + offset) % len(matrix_syms)] for x in range(inner_w))
+    elif "vu" in viz_m:
+        vu_w = max(2, (inner_w - 10) // 2)
+        v1 = int(max(0, min(vu_w, (math.sin(amp_t * 6.0) * 0.5 + 0.5) * vu_w)))
+        v2 = int(max(0, min(vu_w, (math.cos(amp_t * 5.5) * 0.5 + 0.5) * vu_w)))
+        l_bar = "█" * v1 + "░" * (vu_w - v1)
+        r_bar = "█" * v2 + "░" * (vu_w - v2)
+        v_str = f"L:[{l_bar}] R:[{r_bar}]"
+    else:
+        # Spectrum / Wave / Stereo default block viz
+        b_chars = []
+        for x in range(inner_w):
+            v = (math.sin(amp_t * 4.0 + x * 0.3) * 0.4 + math.cos(amp_t * 6.5 - x * 0.2) * 0.4 + 0.5)
+            idx = int(max(0.0, min(1.0, v)) * (len(_AMP_BLOCKS) - 1))
+            b_chars.append(_AMP_BLOCKS[idx])
+        v_str = "".join(b_chars)
+
+    v_line = f"│ {_pad_to_width(v_str, inner_w)} │"
+    try:
+        stdscr.addstr(top + 6, left, v_line, curses.color_pair(2) | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # 9. Meta Info Row: │ VOL 100% · RPT ALL · SHUF OFF · #1/20          VIZ: FIRE │
+    vol = status.get("volume", 100)
+    rpt = status.get("repeat", "off")
+    rpt_icon = {"off": "OFF", "all": "ALL", "one": "ONE"}.get(rpt, str(rpt).upper())
+    shuf_str = "ON" if status.get("shuffle") else "OFF"
+    idx = status.get("current_index", -1)
+    q_len = status.get("queue_len", 0)
+    q_pos = f"{idx + 1 if idx >= 0 else 0}/{q_len}"
+    
+    meta_left = f"VOL {vol}% · RPT {rpt_icon} · SHUF {shuf_str} · #{q_pos}"
+    meta_right = f"VIZ: {viz_m.upper()}"
+    ml_vw = _display_width(meta_left)
+    mr_vw = _display_width(meta_right)
+    meta_pad = max(0, inner_w - ml_vw - mr_vw)
+    meta_text = f"{meta_left}{' ' * meta_pad}{meta_right}"
+    
+    m_line = f"│ {_pad_to_width(meta_text, inner_w)} │"
+    try:
+        stdscr.addstr(top + 7, left, m_line, curses.color_pair(6) | curses.A_DIM)
+    except curses.error:
+        pass
+
+    # 10. Box Border Bottom: ╰────────────╯
+    border_bot = f"╰{'─' * (card_w - 2)}╯"
+    try:
+        stdscr.addstr(top + 8, left, border_bot, curses.color_pair(1) | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # 11. Bottom Keybinds Hint
+    hint = " space pause · tab/m mini off · n/p next/prev · +/- vol · ←/→ seek · v viz · P party "
+    try:
+        stdscr.addstr(h - 1, max(0, (w - len(hint)) // 2), hint[: max(1, w - 2)], curses.color_pair(6) | curses.A_DIM)
+    except curses.error:
+        pass
+
+
+def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str], top: int = 4) -> None:
+    # Clear theme panel area safely (w - 2 prevents curses right-margin overflow errors!)
+    for r in range(top, max(top + 1, h - 1)):
+        try:
+            stdscr.addstr(r, 0, " " * max(0, w - 2), curses.color_pair(6))
+        except curses.error:
+            pass
+
+    try:
+        stdscr.addstr(top, 0, (" 🎨 Theme Selector  ·  ↑/↓ browse (live) · enter apply · esc cancel")[: max(1, w - 2)],
                       curses.color_pair(1) | curses.A_BOLD)
     except curses.error:
         pass
-    # scroll so the selected row stays visible on short terminals
+
     avail = max(1, (h - 3) - top - 1)
     start = max(0, min(sel - avail // 2, max(0, len(names) - avail)))
+    
+    # Left column width for theme list
+    list_w = min(28, max(18, w // 3))
+    
+    # Draw vertical separator line between theme list and info card
+    if w > 45:
+        for r in range(top + 1, max(top + 2, h - 1)):
+            try:
+                stdscr.addstr(r, list_w, "│", curses.color_pair(1))
+            except curses.error:
+                pass
+
     for i in range(start, min(len(names), start + avail)):
         row = top + 2 + (i - start)
         name = names[i]
         col = 0
-        if curses.has_colors():  # swatch in the theme's own accent color
-            accent = _THEMES.get(name, _THEMES["default"])[2]
-            curses.init_pair(7, accent, -1)  # one reusable pair, any # of themes
+        if curses.has_colors():
+            idx_th = list(_THEMES.keys()).index(name) if name in _THEMES else 0
+            p_num = 10 + (idx_th % 50)
             try:
-                stdscr.addstr(row, 0, "▮▮▮ ", curses.color_pair(7))
+                stdscr.addstr(row, 0, "▮▮▮ ", curses.color_pair(p_num))
                 col = 4
             except curses.error:
                 pass
-        # selected row uses pair 1, which is the PREVIEWED theme's header color
-        attr = (curses.color_pair(1) | curses.A_BOLD) if i == sel else curses.color_pair(6)
+        
+        is_selected = (i == sel)
+        attr = (curses.color_pair(1) | curses.A_BOLD | curses.A_REVERSE) if is_selected else curses.color_pair(6)
         try:
-            stdscr.addstr(row, col, (("▸" if i == sel else " ") + name)[: max(0, w - 1 - col)],
-                          attr)
+            name_str = f"{('▸ ' if is_selected else '  ') + name:<{max(1, list_w - col)}}"[: max(1, list_w - col)]
+            stdscr.addstr(row, col, name_str, attr)
+        except curses.error:
+            pass
+
+    # Right side: Theme Info Card
+    if w > 45:
+        cur_name = names[sel] if 0 <= sel < len(names) else "default"
+        card_x = list_w + 3
+        card_w = max(1, w - card_x - 2)
+        r = top + 2
+        try:
+            stdscr.addstr(r, card_x, f"THEME: {cur_name.upper()}"[:card_w], curses.color_pair(1) | curses.A_BOLD)
+            if r + 2 < h - 1:
+                stdscr.addstr(r + 2, card_x, "Palette Swatches:"[:card_w], curses.color_pair(3))
+            if r + 3 < h - 1:
+                stdscr.addstr(r + 3, card_x, "  Header  : ▮▮▮▮▮▮▮▮"[:card_w], curses.color_pair(1) | curses.A_BOLD)
+            if r + 4 < h - 1:
+                stdscr.addstr(r + 4, card_x, "  Current : ▮▮▮▮▮▮▮▮"[:card_w], curses.color_pair(2) | curses.A_BOLD)
+            if r + 5 < h - 1:
+                stdscr.addstr(r + 5, card_x, "  Accent  : ▮▮▮▮▮▮▮▮"[:card_w], curses.color_pair(3) | curses.A_BOLD)
+            if r + 6 < h - 1:
+                stdscr.addstr(r + 6, card_x, "  Title   : ▮▮▮▮▮▮▮▮"[:card_w], curses.color_pair(5) | curses.A_BOLD)
+            if r + 8 < h - 1:
+                stdscr.addstr(r + 8, card_x, "Press ENTER to apply, ESC to cancel"[:card_w], curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
 
 
-def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg,
+def _draw_search(stdscr, h: int, w: int, sq, sresults, ssel, ssearching, smsg,
                  sbucket: dict | None = None, top: int = 4) -> None:
-    # input line
-    line = "Search: " + sq + "_"
+    # Clear content area safely (w - 2 prevents right-margin overflow)
+    for r in range(top, max(top + 1, h - 1)):
+        try:
+            stdscr.addstr(r, 0, " " * max(0, w - 2), curses.color_pair(6))
+        except curses.error:
+            pass
+
+    # Input line
+    line = f" 🔍 Search: {sq}_"
     try:
-        stdscr.addstr(top, 0, line[: w - 1], curses.A_BOLD | curses.color_pair(3))
+        stdscr.addstr(top, 0, line[: max(1, w - 2)], curses.A_BOLD | curses.color_pair(3))
     except curses.error:
         pass
 
     row = top + 2
     if ssearching:
         try:
-            stdscr.addstr(row, 0, f"searching {sq!r}…"[: w - 1], curses.color_pair(6))
+            stdscr.addstr(row, 0, f"  ⚡ searching for {sq!r}…"[: max(1, w - 2)], curses.color_pair(5) | curses.A_BOLD)
         except curses.error:
             pass
     elif smsg:
         try:
-            stdscr.addstr(row, 0, smsg[: w - 1], curses.color_pair(4))
+            stdscr.addstr(row, 0, f"  ✖ {smsg}"[: max(1, w - 2)], curses.color_pair(4))
         except curses.error:
             pass
     elif sresults:
@@ -2096,39 +2694,45 @@ def _draw_search(stdscr, h, w, sq, sresults, ssel, ssearching, smsg,
             channel = r.get("channel") or ""
             mark = "▸" if i == ssel else " "
             title_w = max(1, w - 36)
-            body = f"{mark} {i + 1}.  {r['title'][:title_w]:<{title_w}}  [{dur:>5}]  {channel[:16]}"
-            attr = curses.color_pair(6) | (curses.A_REVERSE if i == ssel else 0)
+            body = f"  {mark} {i + 1:>2}.  {(r.get('title') or '')[:title_avail] if (title_avail := max(1, w - 36)) else ''<{title_avail}}  [{dur:>5}]  {channel[:16]}"
+            body = f"  {mark} {i + 1:>2}.  {r.get('title', '')[:title_w]:<{title_w}}  [{dur:>5}]  {channel[:16]}"
+            attr = curses.color_pair(2) | curses.A_BOLD if i == ssel else curses.color_pair(6)
+            if i == ssel:
+                attr |= curses.A_REVERSE
             try:
-                stdscr.addstr(row, 0, body[: w - 1], attr)
+                stdscr.addstr(row, 0, body[: max(1, w - 2)], attr)
             except curses.error:
                 pass
             row += 1
     else:
         sugg = (sbucket or {}).get("suggest") or []
+        sugg_sel = (sbucket or {}).get("sugg_sel", 0)
         if sugg:
-            for i, s in enumerate(sugg[:5]):
+            for i, s in enumerate(sugg[:8]):
                 if row >= h - 2:
                     break
-                mark = "→" if i == 0 else " "
+                is_sel = (i == sugg_sel)
+                mark = "▸" if is_sel else " "
+                attr = (curses.color_pair(1) | curses.A_BOLD | curses.A_REVERSE) if is_sel else curses.color_pair(6)
                 try:
-                    stdscr.addstr(row, 0, (f"{mark} {s}")[: w - 1],
-                                  curses.color_pair(6) | (curses.A_REVERSE if i == 0 else 0))
+                    stdscr.addstr(row, 0, (f"  {mark} {s}")[: max(1, w - 2)], attr)
                 except curses.error:
                     pass
                 row += 1
             try:
-                stdscr.addstr(row, 0, "tab autofill · enter search"[: w - 1],
+                stdscr.addstr(row + 1, 0, "  tab / → autofill · enter search · ↑/↓ navigate suggestions"[: max(1, w - 2)],
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
         else:
             try:
-                stdscr.addstr(row, 0, "type a song (e.g. /search coldplay) and press enter"[: w - 1],
+                stdscr.addstr(row, 0, "  type any song, artist, or movie (e.g. coldplay, arijit singh, blinding lights)"[: max(1, w - 2)],
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
 
     try:
-        stdscr.addstr(h - 1, 0, _SEARCH_HELP[: w - 1], curses.color_pair(6) | curses.A_DIM)
+        stdscr.addstr(h - 1, 0, ("  enter play · tab add to queue · ↑/↓ navigate · esc back")[: max(1, w - 2)],
+                      curses.color_pair(6) | curses.A_DIM)
     except curses.error:
         pass

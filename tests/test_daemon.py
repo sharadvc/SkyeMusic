@@ -195,7 +195,7 @@ class TestDaemonHandlers(unittest.TestCase):
             {"title": "Lo-fi Beats", "query": "lo-fi", "url": "u2"},
         ]
         resp = self.d._h_suggest("cold")
-        self.assertEqual(resp["data"]["suggestions"], ["Coldplay Yellow"])
+        self.assertEqual(resp["data"]["suggestions"][0], "Coldplay Yellow")
 
     def test_bookmark_saves_and_lists(self):
         self.d._bookmarks = []

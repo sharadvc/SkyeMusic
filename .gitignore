@@ -20,3 +20,10 @@ node_modules/
 .env
 .env.*
 *.local
+
+# Temporary scratch and manual test scripts in root
+scratch*.html
+test_*.py
+test_*.vtt
+trace.py
+

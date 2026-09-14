@@ -12,9 +12,11 @@ from tune.tui import (
     _cycle_viz_mode,
     _draw,
     _draw_lyrics,
+    _draw_mini_player,
     _draw_queue,
     _get_live_position,
     _now_key,
+    _search_key,
 )
 
 
@@ -37,7 +39,7 @@ class TestTuiLayout(unittest.TestCase):
         ui = {"layout": "studio", "lyr_on": False}
         status = {}
 
-        # Tab (ascii 9) cycles studio -> queue -> lyrics -> studio
+        # Tab (ascii 9) cycles studio -> queue -> lyrics -> mini -> studio
         _now_key(9, "now", status, ui)
         self.assertEqual(ui["layout"], "queue")
         self.assertFalse(ui["lyr_on"])
@@ -45,6 +47,9 @@ class TestTuiLayout(unittest.TestCase):
         _now_key(9, "now", status, ui)
         self.assertEqual(ui["layout"], "lyrics")
         self.assertTrue(ui["lyr_on"])
+
+        _now_key(9, "now", status, ui)
+        self.assertEqual(ui["layout"], "mini")
 
         _now_key(9, "now", status, ui)
         self.assertEqual(ui["layout"], "studio")
@@ -88,7 +93,8 @@ class TestTuiLayout(unittest.TestCase):
 
     def test_viz_mode_cycling(self):
         ui = {"viz_mode": "spectrum"}
-        for expected in ["stereo", "wave", "bars", "matrix", "vu", "oscilloscope", "spectrum"]:
+        expected_modes = ["stereo", "wave", "bars", "matrix", "vu", "oscilloscope", "hyperdrive", "dna", "fire", "cyberpunk", "aurora", "spectrum"]
+        for expected in expected_modes:
             _cycle_viz_mode(ui)
             self.assertEqual(ui["viz_mode"], expected)
 
@@ -207,6 +213,79 @@ class TestTuiDualPaneRendering(unittest.TestCase):
         dividers = [call for call in scr.calls if call[2] == "│"]
         self.assertEqual(len(dividers), 0)
 
+    def test_mini_player_rendering(self):
+        scr = MockStdscr(h=24, w=80)
+        status = {
+            "state": "playing",
+            "title": "Starboy - The Weeknd",
+            "position": 45.0,
+            "duration": 230.0,
+            "volume": 85,
+            "repeat": "all",
+            "shuffle": True,
+            "current_index": 2,
+            "queue_len": 15,
+        }
+        ui = {
+            "viz_mode": "fire",
+            "lyr_lines": [{"start": 40.0, "end": 50.0, "text": "I'm a motherfuckin' starboy"}],
+            "lyr_offset": 0.0,
+        }
+        _draw_mini_player(scr, status, ui, 24, 80, amp_t=1.5)
+
+        rendered_text = " ".join(call[2] for call in scr.calls)
+        self.assertIn("Skye Mini Player", rendered_text)
+        self.assertIn("Starboy - The Weeknd", rendered_text)
+        self.assertIn("I'm a motherfuckin' starboy", rendered_text)
+        self.assertIn("VIZ: FIRE", rendered_text)
+        self.assertIn("VOL 85%", rendered_text)
+        self.assertIn("RPT ALL", rendered_text)
+        self.assertIn("SHUF ON", rendered_text)
+        self.assertIn("#3/15", rendered_text)
+
+
+    def test_lyrics_layout_renders_queue_on_left_and_lyrics_on_right(self):
+        scr = MockStdscr(h=30, w=100)
+        ui = dict(self.ui)
+        ui["layout"] = "lyrics"
+        _draw(
+            scr, self.status, 30, 100, "now",
+            sq="", sresults=[], ssel=0, ssearching=False, smsg="",
+            amp_t=1.0, ui=ui
+        )
+
+        left_w = int(100 * 0.46)  # 46
+        # Queue item must be rendered at col 0
+        queue_calls = [call for call in scr.calls if "Track One" in call[2]]
+        self.assertEqual(len(queue_calls), 1)
+        self.assertEqual(queue_calls[0][1], 0)
+
+        # Lyrics item must be rendered at col left_w + 1 (47) and NEVER at col 0
+        lyrics_calls = [call for call in scr.calls if "First line" in call[2]]
+        self.assertEqual(len(lyrics_calls), 1)
+        self.assertEqual(lyrics_calls[0][1], left_w + 1)
+        self.assertNotEqual(lyrics_calls[0][1], 0)
+
+    def test_draw_lyrics_direct_call_forces_right_pane(self):
+        scr = MockStdscr(h=30, w=100)
+        _draw_lyrics(scr, self.status, self.ui, 30, 100, top=6, left=0)
+
+        left_w = int(100 * 0.46)  # 46
+        lyrics_calls = [call for call in scr.calls if "First line" in call[2]]
+        self.assertEqual(len(lyrics_calls), 1)
+        self.assertEqual(lyrics_calls[0][1], left_w + 1)
+        self.assertNotEqual(lyrics_calls[0][1], 0)
+
+
+    def test_search_key_character_input(self):
+        mode, sq, sresults, ssel, ssearching, smsg, sbucket = "search", "", [], 0, False, "", None
+        mode, sq, sresults, ssel, ssearching, smsg, sbucket = _search_key(
+            ord("a"), mode, sq, sresults, ssel, ssearching, smsg, sbucket
+        )
+        self.assertEqual(sq, "a")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

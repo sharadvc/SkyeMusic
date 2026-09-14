@@ -133,7 +133,7 @@ def resolve(arg: str, timeout: int = 20) -> Track:
     raise ResolveError(f"could not resolve {arg!r}: {last_err}")
 
 
-def search(query: str, limit: int = 8, timeout: int = 20) -> list[Track]:
+def search(query: str, limit: int = 15, timeout: int = 20) -> list[Track]:
     """Return up to `limit` candidate Tracks for a free-text query."""
     last_err = ""
     for attempt in range(2):
