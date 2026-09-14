@@ -30,6 +30,8 @@ from typing import cast
 from . import __version__
 from .art import render as render_art
 from .config import Config
+from .discord import DiscordRPC
+from .library import load_library, scan_directory
 from .lyrics import fetch as fetch_lyrics
 from .lyrics import fetch_lrclib
 from .musicbrain import (
@@ -207,6 +209,10 @@ class Daemon:
         self._undo: list = []  # ("remove", i, track) | ("clear", tr, idx) |
                               # ("replace", tr, idx) | ("shuffle", tr)
         self._eq_preset: str = str(self.cfg.get("equalizer_preset") or "flat")
+        self._ab_loop_a: float | None = None
+        self._ab_loop_b: float | None = None
+        self._pitch: float = 0.0
+        self._discord_rpc = DiscordRPC()
         self._multiroom_nodes: dict[str, dict] = {}
         self._user_paused: bool = False
         # DJ mode is always off on daemon start — never restored from config.
@@ -583,6 +589,21 @@ class Daemon:
                                         self._gapless_loaded = nxt
                                     except MpvError:
                                         pass
+                if ticks % 2 == 0 and self.cfg.get("discord_rpc", True):
+                    now_t = self.q.current()
+                    if now_t:
+                        threading.Thread(
+                            target=self._discord_rpc.update,
+                            kwargs={
+                                "title": now_t.title,
+                                "channel": now_t.channel,
+                                "state": self._state,
+                                "position": float(self._last_pos or 0.0),
+                                "duration": now_t.duration,
+                                "url": now_t.url,
+                            },
+                            daemon=True
+                        ).start()
                 if ticks % 5 == 0:
                     self.q.save()
 
@@ -1011,6 +1032,8 @@ class Daemon:
             "device": self._h_device,
             "download": self._h_download,
             "downloads": self._h_downloads,
+            "scan": self._h_scan,
+            "library": self._h_library,
             "remove_download": self._h_remove_download,
             "eq": self._h_eq,
             "seek": self._h_seek,
@@ -1028,6 +1051,9 @@ class Daemon:
             "stats": self._h_stats,
             "lyrics": self._h_lyrics,
             "art": self._h_art,
+            "ab_loop": self._h_ab_loop,
+            "loop": self._h_ab_loop,
+            "pitch": self._h_pitch,
             "playlist": self._h_playlist,
             "fav": self._h_fav,
             "favs": self._h_favs,
@@ -2234,6 +2260,74 @@ class Daemon:
             except MpvError as e:
                 return {"ok": False, "error": f"seek failed: {e}"}
 
+    def _h_ab_loop(self, arg: str = "") -> dict:
+        arg = str(arg).strip().lower()
+        with self._lock:
+            player = self.player
+            pos = float(self._props.get("time-pos") or 0.0)
+            if arg == "a":
+                self._ab_loop_a = pos
+                if player:
+                    try:
+                        player.set_property("ab-loop-a", pos)
+                    except Exception:
+                        pass
+                return {"ok": True, "data": {"a": self._ab_loop_a, "b": self._ab_loop_b}}
+            elif arg == "b":
+                self._ab_loop_b = pos
+                if player:
+                    try:
+                        player.set_property("ab-loop-b", pos)
+                    except Exception:
+                        pass
+                return {"ok": True, "data": {"a": self._ab_loop_a, "b": self._ab_loop_b}}
+            elif arg in ("clear", "reset", "off", "none"):
+                self._ab_loop_a = None
+                self._ab_loop_b = None
+                if player:
+                    try:
+                        player.set_property("ab-loop-a", "no")
+                        player.set_property("ab-loop-b", "no")
+                    except Exception:
+                        pass
+                return {"ok": True, "data": {"cleared": True}}
+            else:
+                return {"ok": True, "data": {"a": self._ab_loop_a, "b": self._ab_loop_b}}
+
+    def _h_pitch(self, arg: str = "") -> dict:
+        arg = str(arg).strip().lower()
+        with self._lock:
+            if not hasattr(self, "_pitch"):
+                self._pitch = 0.0
+            if arg in ("reset", "0", "normal"):
+                self._pitch = 0.0
+            elif arg:
+                try:
+                    delta = float(arg)
+                    if arg.startswith(("+", "-")):
+                        self._pitch += delta
+                    else:
+                        self._pitch = delta
+                except ValueError:
+                    return {"ok": False, "error": f"invalid pitch semitones {arg!r}"}
+            self._pitch = max(-12.0, min(12.0, self._pitch))
+            if self.player:
+                try:
+                    factor = 2.0 ** (self._pitch / 12.0)
+                    self.player.set_property("pitch", factor)
+                except Exception:
+                    pass
+        return {"ok": True, "data": {"pitch_semitones": self._pitch}}
+
+    def _h_scan(self, arg: str = "") -> dict:
+        path = str(arg).strip() or "~/Music"
+        res = scan_directory(path)
+        return {"ok": True, "data": res}
+
+    def _h_library(self, _arg: str = "") -> dict:
+        res = load_library()
+        return {"ok": True, "data": res}
+
     def _h_remove(self, arg: str) -> dict:
         try:
             i = int(arg) - 1  # 1-based in the UI
@@ -2750,6 +2844,9 @@ class Daemon:
                     "fav": self._is_fav(now.url if now else None),
                     "direct_url": self._cached_direct(now.url) if now else None,
                     "eq": getattr(self, "_eq_preset", "flat"),
+                    "ab_loop_a": getattr(self, "_ab_loop_a", None),
+                    "ab_loop_b": getattr(self, "_ab_loop_b", None),
+                    "pitch": getattr(self, "_pitch", 0.0),
 
                     "downloaded": is_downloaded(now.url) if now else False,
                     "error": self._error,

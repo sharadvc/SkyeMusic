@@ -230,10 +230,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("prev", help="play previous track")
     sub.add_parser("stop", help="stop playback (queue kept)")
     sub.add_parser("volume").add_argument("amount", help="0-130, or +5 / -5")
+    sub.add_parser("loop", help="set/clear A-B section loop marker (a, b, clear)").add_argument("point", nargs="?", default="")
+    sub.add_parser("pitch", help="shift pitch in semitones (-12 to +12, e.g. +2, -1, reset)").add_argument("semitones", nargs="?", default="")
     sub.add_parser("speed").add_argument("x", help="playback speed, e.g. 1.5 / 0.8 / 1")
     sub.add_parser("device").add_argument("name", nargs="?", default="",
                                           help="audio device name (omit to list)")
     sub.add_parser("download", help="download a song or current track as audio").add_argument("song", nargs="?", default="")
+    sub.add_parser("scan", help="scan local directory for audio tracks").add_argument("path", nargs="?", default="~/Music")
     sub.add_parser("downloads", help="list offline downloaded audio tracks")
     sub.add_parser("eq", help="cycle or set 10-band equalizer preset (flat, bass, bass_extreme, vocal, acoustic, cyberpunk, rock, pop)").add_argument("preset", nargs="?", default="next")
     sub.add_parser("seek").add_argument("amount", help="e.g. +30 / -15 / 60")
@@ -446,12 +449,19 @@ def run(argv: list[str]) -> int:
         arg = " ".join(args.key_value)
     elif verb == "volume":
         arg = args.amount
+    elif verb == "loop":
+        verb = "ab_loop"
+        arg = args.point
+    elif verb == "pitch":
+        arg = args.semitones
     elif verb == "speed":
         arg = args.x
     elif verb == "device":
         arg = args.name
     elif verb == "download":
         arg = args.song
+    elif verb == "scan":
+        arg = args.path
     elif verb == "downloads":
         arg = ""
     elif verb == "eq":

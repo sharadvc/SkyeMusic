@@ -277,15 +277,67 @@ class TestTuiDualPaneRendering(unittest.TestCase):
         self.assertNotEqual(lyrics_calls[0][1], 0)
 
 
-    def test_search_key_character_input(self):
-        mode, sq, sresults, ssel, ssearching, smsg, sbucket = "search", "", [], 0, False, "", None
-        mode, sq, sresults, ssel, ssearching, smsg, sbucket = _search_key(
-            ord("a"), mode, sq, sresults, ssel, ssearching, smsg, sbucket
+    def test_section_hiding_keybindings(self):
+        ui = {}
+        status = {}
+
+        # H toggles hide_header
+        _now_key(ord("H"), "now", status, ui)
+        self.assertTrue(ui["hide_header"])
+        _now_key(ord("H"), "now", status, ui)
+        self.assertFalse(ui["hide_header"])
+
+        # V toggles hide_viz
+        _now_key(ord("V"), "now", status, ui)
+        self.assertTrue(ui["hide_viz"])
+        _now_key(ord("V"), "now", status, ui)
+        self.assertFalse(ui["hide_viz"])
+
+        # ? toggles hide_footer
+        _now_key(ord("?"), "now", status, ui)
+        self.assertTrue(ui["hide_footer"])
+        _now_key(ord("?"), "now", status, ui)
+        self.assertFalse(ui["hide_footer"])
+
+        # Z activates Zen Mode (hides all 3)
+        _now_key(ord("Z"), "now", status, ui)
+        self.assertTrue(ui["hide_header"])
+        self.assertTrue(ui["hide_viz"])
+        self.assertTrue(ui["hide_footer"])
+
+        # Z again restores all 3
+        _now_key(ord("Z"), "now", status, ui)
+        self.assertFalse(ui["hide_header"])
+        self.assertFalse(ui["hide_viz"])
+        self.assertFalse(ui["hide_footer"])
+
+    def test_section_hiding_rendering(self):
+        scr = MockStdscr(h=30, w=100)
+        ui = dict(self.ui)
+        ui["hide_header"] = True
+        ui["hide_viz"] = True
+        ui["hide_footer"] = True
+
+        _draw(
+            scr, self.status, 30, 100, "now",
+            sq="", sresults=[], ssel=0, ssearching=False, smsg="",
+            amp_t=1.0, ui=ui
         )
-        self.assertEqual(sq, "a")
+
+        rendered_text = " ".join(call[2] for call in scr.calls)
+        # Header logo Skye Player should NOT be in rendered calls
+        self.assertNotIn("Skye Player", rendered_text)
+        # Footer help text should NOT be in rendered calls
+        self.assertNotIn("space pause", rendered_text)
+
+        # In Zen mode, queue starts at top (row 0)
+        queue_calls = [call for call in scr.calls if "Track One" in call[2]]
+        self.assertEqual(len(queue_calls), 1)
+        self.assertEqual(queue_calls[0][0], 0)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

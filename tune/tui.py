@@ -530,8 +530,43 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         ui["lyr_offset"] = 0.0
         ui["viz_toast"] = "LYRICS SYNC: RESET (0.00s)"
         ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("H"):
+        ui["hide_header"] = not ui.get("hide_header")
+        st = "HIDDEN" if ui["hide_header"] else "VISIBLE"
+        ui["viz_toast"] = f"✦ HEADER SECTION: {st} ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("V"):
+        ui["hide_viz"] = not ui.get("hide_viz")
+        st = "HIDDEN" if ui["hide_viz"] else "VISIBLE"
+        ui["viz_toast"] = f"✦ VISUALIZER SECTION: {st} ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("?"):
+        ui["hide_footer"] = not ui.get("hide_footer")
+        st = "HIDDEN" if ui["hide_footer"] else "VISIBLE"
+        ui["viz_toast"] = f"✦ FOOTER SECTION: {st} ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("Z"):
+        is_zen = not (ui.get("hide_header") and ui.get("hide_viz") and ui.get("hide_footer"))
+        ui["hide_header"] = is_zen
+        ui["hide_viz"] = is_zen
+        ui["hide_footer"] = is_zen
+        st = "ACTIVATED" if is_zen else "RESTORED"
+        ui["viz_toast"] = f"🧘 ZEN MODE: {st} ✦"
+        ui["viz_toast_t"] = time.monotonic()
     elif ch == ord("v"):
         _cycle_viz_mode(ui)
+    elif ch == ord("["):
+        _bg_send("ab_loop", "a")
+        ui["viz_toast"] = "⟲ LOOP POINT A SET ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("]"):
+        _bg_send("ab_loop", "b")
+        ui["viz_toast"] = "⟲ LOOP POINT B SET ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch in (ord("\\"), ord("C")):
+        _bg_send("ab_loop", "clear")
+        ui["viz_toast"] = "⟲ LOOP CLEARED ✦"
+        ui["viz_toast_t"] = time.monotonic()
     elif ch == ord("f"):
         if is_dj:
             _bg_send("dj", "fade")
@@ -1010,27 +1045,42 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
           amp_t: float, ui: dict, cmdq: str = "",
           theme_sel: int = 0, theme_names: list | None = None,
           qfilter: str = "", sbucket: dict | None = None) -> None:
-    _draw_header(stdscr, status, w, amp_t)
+    hide_hdr = bool(ui.get("hide_header"))
+    hide_viz = bool(ui.get("hide_viz"))
+    hide_ftr = bool(ui.get("hide_footer"))
+
+    if not hide_hdr:
+        _draw_header(stdscr, status, w, amp_t)
 
     layout = ui.get("layout", "studio")
     if layout == "mini" and mode in ("now", "filter", "cmd"):
         _draw_mini_player(stdscr, status, ui, h, w, amp_t)
         return
 
-    # In DJ mode the deck takes over the full screen below the header (row 4..h-2)
+    header_h = 0 if hide_hdr else 4
     is_dj = bool(status.get("dj_mode"))
-    viz_h = (h - 5) if is_dj else _viz_height(h, mode)
+    if hide_viz:
+        viz_h = 0
+    else:
+        viz_h = (h - (1 + header_h)) if is_dj else _viz_height(h, mode)
+
+    viz_top = header_h
     if viz_h > 0:
-        _draw_amp(stdscr, status, amp_t, w, ui, viz_top=4, viz_h=viz_h, total_h=h)
-        sep_row = 4 + viz_h
+        _draw_amp(stdscr, status, amp_t, w, ui, viz_top=viz_top, viz_h=viz_h, total_h=h)
+        sep_row = viz_top + viz_h
         content_top = sep_row + 1
     else:
-        sep_row = 4
-        content_top = 4
+        sep_row = viz_top
+        if hide_hdr and hide_viz:
+            content_top = 0
+        else:
+            content_top = sep_row + 1 if sep_row > 0 else 0
+
+    bottom_limit = h if hide_ftr else (h - 1)
 
     # Clear content pane background to guarantee universal theme coverage
     if not is_dj and layout != "mini":
-        for r in range(content_top, max(content_top + 1, h - 1)):
+        for r in range(content_top, max(content_top + 1, bottom_limit)):
             try:
                 stdscr.addstr(r, 0, " " * max(0, w - 2), curses.color_pair(6))
             except curses.error:
@@ -1044,8 +1094,8 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
     left_w = int(w * 0.46) if is_split else w
     right_w = (w - left_w - 1) if is_split else 0
 
-    # Section label separator (skip in DJ mode — deck owns full screen)
-    if sep_row < h - 1 and mode != "search" and not is_dj:
+    # Section label separator (skip in DJ mode or when both header and viz are hidden)
+    if sep_row < h - 1 and mode != "search" and not is_dj and not (hide_hdr and hide_viz):
 
         err = status.get("error")
         if err:
@@ -1136,13 +1186,13 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             pass
 
     elif is_split:
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=left_w)
-        for r in range(content_top, max(content_top + 1, h - 1)):
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=left_w, bottom=bottom_limit)
+        for r in range(content_top, max(content_top + 1, bottom_limit)):
             try:
                 stdscr.addstr(r, left_w, "│", curses.color_pair(1))
             except curses.error:
                 pass
-        _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=left_w + 1, max_w=right_w)
+        _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=left_w + 1, max_w=right_w, bottom=bottom_limit)
         if mode == "cmd":
             try:
                 stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[:w - 1],
@@ -1155,7 +1205,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
-        else:
+        elif not hide_ftr:
             try:
                 stdscr.addstr(h - 1, 0, _NOW_HELP[:w - 1],
                               curses.color_pair(6) | curses.A_DIM)
@@ -1164,21 +1214,22 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
     elif layout == "lyrics" or (ui.get("lyr_on") and layout != "studio"):
         l_w = int(w * 0.46)
         r_w = max(1, w - l_w - 1)
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=l_w)
-        for r in range(content_top, max(content_top + 1, h - 1)):
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=l_w, bottom=bottom_limit)
+        for r in range(content_top, max(content_top + 1, bottom_limit)):
             try:
                 stdscr.addstr(r, l_w, "│", curses.color_pair(1))
             except curses.error:
                 pass
-        _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=l_w + 1, max_w=r_w)
-        try:
-            stdscr.addstr(h - 1, 0, ("space pause · tab layout · n/p next/prev · v viz · +/- vol · "
-                                     "l/esc back · q quit")[:w - 1],
-                          curses.color_pair(6) | curses.A_DIM)
-        except curses.error:
-            pass
+        _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=l_w + 1, max_w=r_w, bottom=bottom_limit)
+        if not hide_ftr:
+            try:
+                stdscr.addstr(h - 1, 0, ("space pause · tab layout · n/p next/prev · v viz · +/- vol · "
+                                         "l/esc back · q quit")[:w - 1],
+                              curses.color_pair(6) | curses.A_DIM)
+            except curses.error:
+                pass
     else:
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top)
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, bottom=bottom_limit)
         if mode == "cmd":
             try:
                 stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[:w - 1],
@@ -1191,7 +1242,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
-        else:
+        elif not hide_ftr:
             try:
                 stdscr.addstr(h - 1, 0, _NOW_HELP[:w - 1],
                               curses.color_pair(6) | curses.A_DIM)
@@ -1200,7 +1251,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
 
 
 def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
-                 left: int = 0, max_w: int | None = None) -> None:
+                 left: int = 0, max_w: int | None = None, bottom: int | None = None) -> None:
     """Karaoke-style lyrics pane with zero-latency audio clock interpolation,
     vocal cadence modeling, intro countdown, and live sync offset."""
     if left <= 0:
@@ -1208,7 +1259,9 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
         left = split_w + 1
         if max_w is None:
             max_w = max(1, w - left - 1)
-    window = max(0, (h - 3) - top)
+    if bottom is None:
+        bottom = h if ui.get("hide_footer") else (h - 1)
+    window = max(0, bottom - top)
     if window <= 0:
         return
     avail_w = max(1, min(max_w - 1 if max_w is not None else (w - left - 2), w - left - 2))
@@ -2265,6 +2318,19 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     # tick mark at playhead
     if 0 < filled < bw:
         bar = bar[:filled - 1] + "●" + bar[filled:]
+    ab_a = status.get("ab_loop_a")
+    ab_b = status.get("ab_loop_b")
+    if dur and bw > 10:
+        bar_chars = list(bar)
+        if ab_a is not None:
+            idx_a = int(round((ab_a / dur) * (bw - 1)))
+            if 0 <= idx_a < len(bar_chars):
+                bar_chars[idx_a] = "["
+        if ab_b is not None:
+            idx_b = int(round((ab_b / dur) * (bw - 1)))
+            if 0 <= idx_b < len(bar_chars):
+                bar_chars[idx_b] = "]"
+        bar = "".join(bar_chars)
     try:
         stdscr.addstr(2, 0, ("▕" + bar[:bw] + "▏")[:W], curses.color_pair(3))
     except curses.error:
@@ -2280,6 +2346,10 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     shuf     = "⇄" if status.get("shuffle") else "→"
     q_pos    = f"{idx + 1 if idx >= 0 else 0}/{status.get('queue_len', 0)}"
     meta     = f"  {vol_bar} {vol}%  {rpt_icon} repeat  {shuf} shuffle  ♯ {q_pos}"
+    if ab_a is not None or ab_b is not None:
+        str_a = _fmt_time(ab_a) if ab_a is not None else "0:00"
+        str_b = _fmt_time(ab_b) if ab_b is not None else "END"
+        meta += f"  ⟲ [{str_a}..{str_b}]"
     sp = status.get("speed")
     if sp and sp != 1:
         meta += f"  ×{sp}"
@@ -2306,11 +2376,12 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
 
 
 def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = "",
-                top: int = 6, left: int = 0, max_w: int | None = None) -> None:
+                top: int = 6, left: int = 0, max_w: int | None = None, bottom: int | None = None) -> None:
     """Render the queue starting at row top, two rows per track (title + channel)."""
     vis = _visible_queue(status, qfilter)
     cur = status.get("current_index", -1)
-    bottom = max(top + 1, h - 3)
+    if bottom is None:
+        bottom = max(top + 1, h - 1)
     page = bottom - top
     if page <= 0:
         return

@@ -1,71 +1,112 @@
-# 🎵 Skye Music Player (SkyeMusic / `tune` / `skye`)
+# 🎵 Skye Music Player (`SkyeMusic`)
+
+<div align="center">
+
+![Skye Music Player TUI Demo](assets/tui-demo.png)
+
+**The Terminal & Mobile Web Music Studio — Stream Any Song Without API Keys or Account Login.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![mpv](https://img.shields.io/badge/Audio-mpv%20engine-red.svg)](https://mpv.io/)
-[![UI](https://img.shields.io/badge/UI-Curses%20TUI%20%2B%20React%20Web-purple.svg)](https://react.dev)
+[![mpv Engine](https://img.shields.io/badge/Audio-mpv%20engine-red.svg)](https://mpv.io/)
+[![UI Mode](https://img.shields.io/badge/UI-Curses%20TUI%20%2B%20React%20Web-purple.svg)](https://react.dev)
 
-> **Skye Music Player (`skye` / `tune`)** is an open-source, zero-latency terminal music player, streaming engine, and mobile web audio studio. Stream any song or YouTube track without API keys or login accounts. Features dual-pane Curses TUI, live character-by-character synced karaoke lyrics, 12 audio visualizers, a Pioneer DDJ-style DJ console, local network AirDrop mobile remote, multi-listener Skyecast broadcasting, and Deep Focus OS ambient timer.
+[Quickstart](#-quickstart--installation) • [Key Features](#-key-features) • [TUI Keybindings](#-tui-keyboard-controls) • [CLI Commands](#-cli-command-reference) • [FAQ](#-frequently-asked-questions)
+
+</div>
 
 ---
 
-## ⚡ Quickstart
+## 📖 Overview
 
-### 1. Prerequisites
-- **mpv** (High-fidelity audio backend): `brew install mpv`
-- **yt-dlp** (Media stream extractor): `brew install yt-dlp`
+**Skye Music Player** (`skyemusic` / `skye` / `tune`) is an open-source terminal streaming player, audio engine, and mobile web remote built on top of `mpv` and `yt-dlp`. 
 
-### 2. Instant Launch via NPX / NPM (Zero Install)
+It allows you to search and stream any song, YouTube video, or playlist directly inside your terminal or from a phone web app — with zero ads, zero API keys, and no login required.
+
+---
+
+## ⚡ Quickstart & Installation
+
+### Prerequisites
+Make sure you have `mpv` and `yt-dlp` installed on your system:
 ```bash
-# Launch directly with NPX
+# macOS (via Homebrew)
+brew install mpv yt-dlp
+
+# Linux (Debian / Ubuntu / Arch)
+sudo apt install mpv
+pip install -U yt-dlp
+```
+
+---
+
+### Method 1: Instant Launch via NPX / NPM (Zero Install)
+
+No Python package setup needed! Run instantly using Node.js:
+
+```bash
+# Launch directly with NPX (Zero installation)
 npx skyemusic
 
-# Or install globally
+# Or install globally with NPM
 npm install -g skyemusic
+
+# Run anywhere
 skye
 ```
 
-### 3. Installation via Python / PIP
+---
+
+### Method 2: Installation via Python / PIP
+
+Install from PyPI or directly from source:
+
 ```bash
+# Install from PyPI
 pip install tune-cli
-# or clone & install
+
+# Or clone & install locally
 git clone https://github.com/sharadvc/SkyeMusic.git
 cd SkyeMusic
+
+# Install in editable mode
 pip install -e .
+
+# Note: On macOS Homebrew Python, pass --break-system-packages if prompted:
+pip install -e . --break-system-packages
 ```
 
 ---
 
-## 🌟 Key Features & Highlights
+## 🌟 Key Features
 
-### 🎤 Live Synced Karaoke Lyrics
-- **Zero-Latency Audio Clock Interpolation**: Character-by-character karaoke sweep synced with sub-millisecond precision.
-- **Multi-Source Fetching**: Automatic lookup via LRCLIB, JioSaavn, and embedded LRC/VTT tags.
-- **Transliteration Engine**: Automatic Devanagari/Hindi to Hinglish transliteration for seamless singing along.
-- **Sync Nudge Controls**: Fine-tune lyrics alignment live with `,` (-0.05s) and `.` (+0.05s).
+### 🎤 1. Live Synced Karaoke Lyrics
+- **Sub-Second Precision**: Synchronized character-by-character karaoke line sweeps.
+- **Automatic Lyrics Lookup**: Fetches LRC and VTT synced lyrics automatically via LRCLIB and JioSaavn.
+- **Hinglish Transliteration**: Automatically converts Hindi/Devanagari scripts to easy-to-read Roman Hinglish.
+- **Live Sync Offset Nudge**: Adjust timing live using `,` (-0.05s) and `.` (+0.05s).
 
-### 🖥️ Dual-Pane Studio Curses TUI
-- **Split-Screen Studio View**: Track Queue on the left pane (`col 0..left_w`), Live Synced Karaoke on the right pane (`col left_w+1..w`).
+### 🖥️ 2. Dual-Pane Studio Curses TUI
+- **Dual-Pane Layout**: Track Queue on the left (`col 0..left_w`), Karaoke Lyrics on the right (`col left_w+1..w`).
 - **12 Audio Visualizers**: Spectrum (peak hold), Stereo (L/R), Waveform, Matrix, DNA Helix, Cyberpunk Retrowave Horizon, Aurora, Fire, and VU meters.
-- **Universal Theme Engine**: 28 pre-built themes (`Tanjiro`, `Rengoku`, `Zenitsu`, `Dracula`, `Cyberpunk`, `Tokyo`, `Amber`) with live full-screen preview (`t` key).
+- **Live Color Themes**: 28 color themes (`Tanjiro`, `Rengoku`, `Zenitsu`, `Dracula`, `Cyberpunk`, `Tokyo`, `Amber`) previewable live (`t` key).
 
-### 📱 Mobile Web App & AirDrop Wi-Fi Remote
-- **Mobile Touch Interface**: React + Tailwind PWA accessible from any smartphone, tablet, or browser on your local Wi-Fi.
-- **AirDrop Wi-Fi Pairing**: Direct IP resolution (`http://192.168.x.x:8765/`) for iOS AirDrop & instant QR Code scanning.
-- **Real-Time SSE Sync**: Server-Sent Events push volume, progress, active track, and queue state instantaneously.
-- **PIN Lock Protection**: Secure your host session (`skye config remote_pin 2468`).
+### 📱 3. Mobile Web Remote & AirDrop Wi-Fi Pairing
+- **Mobile Touch PWA**: Touch-friendly React web interface served automatically at `http://<your-ip>:8765`.
+- **AirDrop Wi-Fi Discovery**: Direct local IP resolution (`http://192.168.x.x:8765/`) for iOS AirDrop & instant QR Code scanning.
+- **Real-Time Sync**: Server-Sent Events push progress, play/pause state, volume, and queue updates instantly.
 
-### 🎧 Pioneer DDJ Console DJ Mode
-- **Dual-Deck Pioneer Console**: Press `J` in TUI to launch a full-screen Pioneer DDJ-style dual-deck console.
-- **Real-Time FX**: Live scratching (`s`), LP/HP filter sweeps (`e`), sub-bass drops (`b`), and crossfader auto-transition (`f`).
+### 🎧 4. Pioneer DDJ-Style DJ Deck Console
+- **Dual Deck Console**: Press `J` in the TUI to open a full-screen Pioneer DDJ DJ deck console.
+- **Real-Time FX**: Live vinyl scratch (`s`), LP/HP filter sweep (`e`), sub-bass drop (`b`), and crossfader auto-fade (`f`).
 
-### 📡 Skyecast Live Broadcasting
-- **Multi-Listener Session Broadcast**: Host a live listening session over local network or tunnel (`skye broadcast <name>`).
-- **Sync Listener Playback**: Friends run `skye join <name>` to mirror playback, track position, and pause/play state in real-time.
+### 📡 5. Skyecast Live Multi-User Broadcast
+- **Broadcast Live**: Stream your active playback session to friends (`skye broadcast <room_name>`).
+- **Join Broadcast**: Friends join your room (`skye join <room_name>`) to mirror your track position and pause/play state in real-time.
 
-### 🧠 Deep Focus OS & Ambient Audio Engine
-- **Pomodoro Focus Timer**: Launch ambient focus sessions (`skye focus 25`) with dark minimalist UI.
-- **14 Mood Generators**: Procedural mood streaming (`skye mood focus`, `skye mood lo-fi`, `skye mood chill hindi`).
+### 🧠 6. Deep Focus OS & Mood Engine
+- **Pomodoro Timer**: Launch ambient focus sessions (`skye focus 25`) with a dark, minimalist UI.
+- **14 Mood Generators**: Procedurally streams sessions by mood (`skye mood focus`, `skye mood lo-fi`, `skye mood chill hindi`).
 
 ---
 
@@ -75,31 +116,31 @@ pip install -e .
 | :--- | :--- |
 | `space` | Play / Pause playback |
 | `tab` | Cycle layout (**Dual-Pane Studio** → **Queue** → **Lyrics** → **Mini Player**) |
-| `v` | Cycle visualizer (**Spectrum**, **Stereo**, **Wave**, **Fire**, **Matrix**, **DNA**, etc.) |
+| `v` | Cycle visualizers (**Spectrum**, **Stereo**, **Wave**, **Fire**, **Matrix**, **DNA**, etc.) |
 | `/` | Search YouTube directly from inside the TUI |
 | `n` / `p` | Next track / Previous track |
-| `↑` / `↓` | Navigate tracks in queue |
+| `↑` / `↓` | Move selection cursor in queue |
 | `enter` | Jump to selected track |
 | `d` | Delete selected track from queue |
 | `+` / `-` | Adjust volume up / down (5%) |
 | `←` / `→` | Seek backward / forward 5s |
-| `,` / `.` | Live fine-tune lyrics sync offset (-0.05s / +0.05s) |
+| `,` / `.` | Live fine-tune lyrics sync (-0.05s / +0.05s) |
 | `o` | Reset lyrics sync offset to 0.00s |
 | `l` | Toggle between Studio mode and full Karaoke Lyrics view |
 | `t` | Open live full-screen Color Theme Selector |
 | `J` | Enter Pioneer DDJ-style DJ Deck Console |
 | `P` | Toggle RGB Party Mode lightshow |
-| `q` / `Esc` | Quit TUI (daemon continues running silently in background) |
+| `q` / `Esc` | Exit TUI (daemon continues playing in background) |
 
 ---
 
 ## 💻 CLI Command Reference
 
 ```bash
-skye                           # Open interactive full-screen TUI
+skye                           # Open interactive full-screen TUI studio
 skye play "song name or url"   # Play a track or YouTube URL immediately
 skye add "song name"           # Add track to queue without interrupting
-skye search "coldplay"         # Search tracks and pick interactively
+skye search "coldplay"         # Search tracks and select interactively
 skye mix "lo-fi beats"         # Generate & shuffle instant mix session
 skye mood focus                # Smart session for a mood (14 moods supported)
 skye radio "tame impala"       # Dynamic radio stream based on artist/genre
@@ -110,7 +151,7 @@ skye volume 80                 # Set volume (0-130%)
 skye seek +30                  # Seek forward 30 seconds
 skye lyrics                    # View current track's synced lyrics
 skye remote                    # Show phone web remote URL & QR code
-skye dj                        # Launch Pioneer DDJ console
+skye dj                        # Launch Pioneer DDJ DJ deck console
 skye focus 25                  # Start 25-minute Pomodoro focus session
 skye broadcast <name>          # Broadcast live session to friends
 skye join <name>               # Join a friend's live Skyecast session
@@ -119,39 +160,16 @@ skye quit                      # Shutdown daemon and stop audio backend
 
 ---
 
-## 🏗️ Architecture & How It Works
-
-```mermaid
-flowchart TD
-    UserCLI["⌨️ CLI Client (skye / tune)"] -->|Unix Socket / IPC| Daemon["⚡ Skye Daemon (Python Background Service)"]
-    UserTUI["🖥️ Curses TUI Studio"] -->|Unix Socket / IPC| Daemon
-    WebRemote["📱 Mobile Web App (React / PWA)"] -->|HTTP / SSE (Port 8765)| Daemon
-    Skyecast["📡 Skyecast Listeners"] -->|Localtunnel / SSE| Daemon
-    
-    Daemon -->|yt-dlp stream lookup| YouTube["☁️ YouTube Media Streams"]
-    Daemon -->|audio IPC| MPV["🔊 mpv Audio Backend"]
-    Daemon -->|lyrics API| LRCLIB["🎤 LRCLIB / JioSaavn APIs"]
-```
-
-1. **Background Daemon Process**: Manages an isolated `mpv` instance (`--input-ipc-server`), handles async track resolution, caches search results in `~/.config/tune/queue.json`, and maintains audio state.
-2. **Thin Client Architecture**: The CLI and Curses TUI communicate over a high-speed local Unix socket. Closing the TUI leaves playback running seamlessly.
-3. **HTTP / SSE Web Server**: Embedded Web Server built in Python serves the React PWA mobile interface and pushes live status events.
-
----
-
-## ❓ Frequently Asked Questions (AEO & Search Index)
+## ❓ Frequently Asked Questions
 
 #### Q: What is Skye Music Player?
-**A**: Skye Music Player (`SkyeMusic`) is an open-source terminal music player and streaming CLI built for macOS and Linux. It streams audio directly from YouTube using `mpv` and `yt-dlp`, featuring live synchronized karaoke lyrics, Curses dual-pane TUI, and a mobile web remote.
+**A**: Skye Music Player (`SkyeMusic` / `skye` / `tune`) is an open-source terminal music player and streaming engine. It streams audio directly from YouTube using `mpv` and `yt-dlp`, featuring live synchronized karaoke lyrics, a Curses dual-pane TUI, and a phone web remote.
 
-#### Q: Does Skye Music Player require YouTube API keys or account login?
-**A**: No. Skye Music Player operates completely keyless and account-free. It uses `yt-dlp` for media stream extraction without requiring user authentication or API tokens.
+#### Q: Does it require any YouTube API keys or account login?
+**A**: No. Skye Music Player operates 100% keyless and account-free.
 
-#### Q: How do I control Skye Music Player from my iPhone or Android device?
-**A**: Run `skye remote` in your terminal to display the local Wi-Fi URL (e.g. `http://192.168.1.17:8765/`) or scan the QR code. Open the link on your mobile browser to access the full touch-enabled web remote.
-
-#### Q: How does live synced karaoke lyrics work in Skye Music Player?
-**A**: Skye Music Player fetches LRC and VTT synced lyrics from LRCLIB, JioSaavn, and track metadata. It applies zero-latency audio clock interpolation to highlight words character-by-character as they are sung.
+#### Q: How do I control playback from my phone?
+**A**: Run `skye remote` in your terminal to get your local Wi-Fi URL (e.g., `http://192.168.1.17:8765/`) or scan the QR code to open the web remote on your mobile browser.
 
 ---
 
