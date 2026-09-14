@@ -687,9 +687,12 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
         else:
             _bg_send("shuffle")
 
-    elif ch == ord("r"):
-        _cycle_repeat(status)
     elif ch == ord("a"):
+        ui["art_mode"] = not ui.get("art_mode")
+        st = "ENABLED" if ui["art_mode"] else "DISABLED"
+        ui["viz_toast"] = f"✦ INLINE ALBUM ART: {st} ✦"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("A"):
         ui["art"] = True
     elif ch in map(ord, "012345"):
         _bg_send("rate", str(ch - ord("0")))
@@ -1186,7 +1189,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             pass
 
     elif is_split:
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=left_w, bottom=bottom_limit)
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=left_w, bottom=bottom_limit, ui=ui)
         for r in range(content_top, max(content_top + 1, bottom_limit)):
             try:
                 stdscr.addstr(r, left_w, "│", curses.color_pair(1))
@@ -1214,7 +1217,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
     elif layout == "lyrics" or (ui.get("lyr_on") and layout != "studio"):
         l_w = int(w * 0.46)
         r_w = max(1, w - l_w - 1)
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=l_w, bottom=bottom_limit)
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, left=0, max_w=l_w, bottom=bottom_limit, ui=ui)
         for r in range(content_top, max(content_top + 1, bottom_limit)):
             try:
                 stdscr.addstr(r, l_w, "│", curses.color_pair(1))
@@ -1229,7 +1232,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             except curses.error:
                 pass
     else:
-        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, bottom=bottom_limit)
+        _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, bottom=bottom_limit, ui=ui)
         if mode == "cmd":
             try:
                 stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[:w - 1],
@@ -2376,7 +2379,8 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
 
 
 def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = "",
-                top: int = 6, left: int = 0, max_w: int | None = None, bottom: int | None = None) -> None:
+                top: int = 6, left: int = 0, max_w: int | None = None, bottom: int | None = None,
+                ui: dict | None = None) -> None:
     """Render the queue starting at row top, two rows per track (title + channel)."""
     vis = _visible_queue(status, qfilter)
     cur = status.get("current_index", -1)
@@ -2393,6 +2397,26 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
             stdscr.addstr(r, left, " " * avail_w, curses.color_pair(6))
         except curses.error:
             pass
+
+    if ui and ui.get("art_mode") and status.get("url") and page >= 12 and avail_w >= 20:
+        cur_url = status.get("url")
+        if ui.get("_art_url") != cur_url:
+            ui["_art_url"] = cur_url
+            try:
+                from .art import render as render_art
+                ui["_art_lines"] = render_art(cur_url, cols=min(32, avail_w - 4), rows=6)
+            except Exception:
+                ui["_art_lines"] = []
+        art_lines = ui.get("_art_lines", [])
+        if art_lines:
+            art_h = min(6, len(art_lines))
+            for i in range(art_h):
+                try:
+                    stdscr.addstr(top + i, left + 1, art_lines[i][:avail_w - 2])
+                except curses.error:
+                    pass
+            top += art_h + 1
+            page = bottom - top
     if not vis:
         empty_msg = ("  (queue is empty  ·  / to search)" if not qfilter else f"  (no tracks matching '{qfilter}')")
         try:

@@ -335,6 +335,14 @@ class TestTuiDualPaneRendering(unittest.TestCase):
         self.assertEqual(len(queue_calls), 1)
         self.assertEqual(queue_calls[0][0], 0)
 
+    def test_inline_art_toggle(self):
+        ui = {}
+        status = {}
+        _now_key(ord("a"), "now", status, ui)
+        self.assertTrue(ui.get("art_mode"))
+        _now_key(ord("a"), "now", status, ui)
+        self.assertFalse(ui.get("art_mode"))
+
 
 if __name__ == "__main__":
     unittest.main()
