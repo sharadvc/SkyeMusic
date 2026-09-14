@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Skye Music Player TUI Demo](assets/tui-demo.png)
+![Skye Music Player TUI Demo](assets/tui-demo.png?v=2)
 
 **The Terminal & Mobile Web Music Studio — Stream Any Song Without API Keys or Account Login.**
 
