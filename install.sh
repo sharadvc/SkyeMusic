@@ -71,14 +71,40 @@ esac
 
 # 3. Install Python Package & Binaries
 echo -e "${BOLD}[2/4] Installing Python package & CLI binaries...${RESET}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="https://github.com/sharadvc/SkyeMusic.git"
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
+    INSTALL_SRC="$SCRIPT_DIR"
+else
+    # Piped via curl — clone or pull into ~/.local/share/skyemusic
+    INSTALL_DIR="$HOME/.local/share/skyemusic"
+    mkdir -p "$HOME/.local/share"
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        echo "  ✓ Updating existing SkyeMusic repository..."
+        git -C "$INSTALL_DIR" pull --quiet 2>/dev/null || true
+    else
+        echo "  ✓ Cloning SkyeMusic repository into $INSTALL_DIR..."
+        rm -rf "$INSTALL_DIR"
+        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" --quiet
+    fi
+    INSTALL_SRC="$INSTALL_DIR"
+    SCRIPT_DIR="$INSTALL_DIR"
+fi
+
+if [ -f "$SCRIPT_DIR/bin/tune" ]; then
+    chmod +x "$SCRIPT_DIR/bin/tune" 2>/dev/null || true
+fi
 
 if command -v pipx >/dev/null 2>&1; then
-    pipx install --force "$SCRIPT_DIR" 2>/dev/null || true
+    pipx install --force "$INSTALL_SRC" 2>/dev/null || true
 elif command -v pip3 >/dev/null 2>&1; then
-    pip3 install --quiet --break-system-packages "$SCRIPT_DIR" 2>/dev/null || pip3 install --user --quiet --break-system-packages "$SCRIPT_DIR" 2>/dev/null || true
+    pip3 install --quiet --break-system-packages "$INSTALL_SRC" 2>/dev/null || pip3 install --user --quiet --break-system-packages "$INSTALL_SRC" 2>/dev/null || true
 elif command -v pip >/dev/null 2>&1; then
-    pip install --quiet --break-system-packages "$SCRIPT_DIR" 2>/dev/null || pip install --user --quiet --break-system-packages "$SCRIPT_DIR" 2>/dev/null || true
+    pip install --quiet --break-system-packages "$INSTALL_SRC" 2>/dev/null || pip install --user --quiet --break-system-packages "$INSTALL_SRC" 2>/dev/null || true
 fi
 
 # 4. Link Global Binaries (tune, skye, skyemusic)
