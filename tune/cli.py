@@ -293,11 +293,27 @@ def build_parser() -> argparse.ArgumentParser:
                                          help="minutes, or 'off' to cancel")
     sub.add_parser("airdrop", help="AirDrop the web remote URL to your iPhone/iPad")
     sub.add_parser("remote", help="show mobile web remote URLs, QR code, and AirDrop link")
+    sub.add_parser("home", help="open Skye Music Launchpad Home")
     sub.add_parser("quit", help="stop the daemon and player")
     return p
 
 
 def run(argv: list[str]) -> int:
+    KNOWN_COMMANDS = {
+        "daemon", "play", "add", "mix", "mood", "radio", "similar", "discover",
+        "broadcast", "join", "focus", "queue", "search", "pause", "resume",
+        "toggle", "next", "prev", "stop", "volume", "loop", "pitch", "speed",
+        "device", "download", "scan", "downloads", "eq", "seek", "remove",
+        "playindex", "move", "clear", "undo", "m3u", "shuffle", "repeat",
+        "list", "status", "info", "history", "recents", "stats", "lyrics",
+        "art", "share", "dj", "import", "rate", "wrapped", "doctor",
+        "playlist", "fav", "favs", "bookmark", "bookmarks", "sleep",
+        "airdrop", "remote", "quit", "home",
+    }
+    # Smart query routing: e.g. `skye starboy` or `skye lofi chill` automatically routes to `play`
+    if argv and not argv[0].startswith("-") and argv[0] not in KNOWN_COMMANDS:
+        argv = ["play"] + argv
+
     p = build_parser()
     args = p.parse_args(argv)
 
@@ -305,6 +321,11 @@ def run(argv: list[str]) -> int:
         ensure_daemon()
         from .tui import run as tui_run
         tui_run()
+        return 0
+    if args.cmd == "home":
+        ensure_daemon()
+        from .tui import run as tui_run
+        tui_run(initial_mode="home")
         return 0
     if args.cmd == "dj" and not getattr(args, "action", ""):
         ensure_daemon()

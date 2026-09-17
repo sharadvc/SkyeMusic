@@ -14,6 +14,7 @@ so re-opening tune is instant.
 from __future__ import annotations
 
 import curses
+import json
 import math
 import sys
 import termios
@@ -165,7 +166,7 @@ def _apply_theme(name: str, stdscr=None) -> None:
             stdscr.bkgd(" ", curses.color_pair(6))
         except curses.error:
             pass
-_NOW_HELP = ("space pause · P party mode · J DJ mode · e eq · D download · M radio · tab layout · n/p next/prev · v viz · ↑/↓ select · enter jump · +/- vol · ←/→ seek · l lyrics · t theme · / search · q quit")
+_NOW_HELP = ("space pause · P party · J DJ · e eq · D download · M radio · tab layout · n/p next/prev · v viz · ↑/↓ select · enter jump · +/- vol · ←/→ seek · l lyrics · t theme · / search · h home · q quit")
 _SEARCH_HELP = "enter play · tab add to queue · ↑/↓ move · backspace edit · esc back"
 _SEARCH_LIMIT = 200
 _VIZ_MODES = ("spectrum", "stereo", "wave", "bars", "matrix", "vu", "oscilloscope", "hyperdrive", "dna", "fire", "cyberpunk", "aurora")
@@ -189,18 +190,18 @@ def _fmt_time(sec: float | None) -> str:
     return f"{sec // 60}:{sec % 60:02d}"
 
 
-def run() -> None:
-    curses.wrapper(_main)
+def run(initial_mode: str | None = None) -> None:
+    curses.wrapper(lambda scr: _main(scr, initial_mode=initial_mode))
 
 
-def _main(stdscr) -> None:
+def _main(stdscr, initial_mode: str | None = None) -> None:
     try:
-        _loop(stdscr)
+        _loop(stdscr, initial_mode=initial_mode)
     except KeyboardInterrupt:
         pass
 
 
-def _loop(stdscr) -> None:
+def _loop(stdscr, initial_mode: str | None = None) -> None:
     curses.curs_set(0)
     stdscr.nodelay(True)
     stdscr.keypad(True)  # translate escape sequences (arrows, etc.)
@@ -210,6 +211,14 @@ def _loop(stdscr) -> None:
         _apply_theme(_load_theme())
 
     status: dict = {"state": "idle"}
+    init_status = {}
+    try:
+        resp = send_cmd("status")
+        if resp.get("ok"):
+            init_status = resp.get("data", {})
+            status = init_status
+    except Exception:
+        pass
 
     # Background status poller: the UI never blocks on the daemon, even if it
     # is slow or down. The render loop only reads `status`.
@@ -231,8 +240,15 @@ def _loop(stdscr) -> None:
 
     threading.Thread(target=_poller, daemon=True).start()
 
+    # Determine initial mode: if active playback/queue exists, open now-playing; else open launchpad home
+    if initial_mode:
+        mode = initial_mode
+    elif init_status.get("state") in ("playing", "paused", "loading") or init_status.get("queue_len", 0) > 0:
+        mode = "now"
+    else:
+        mode = "home"
+
     # search-mode state
-    mode = "now"                      # "now" | "search" | "cmd" | "theme" | "filter"
     sq, sresults, ssel = "", [], 0
     ssearching, smsg = False, ""
     sbucket: dict = {}
@@ -336,6 +352,10 @@ def _loop(stdscr) -> None:
                   amp_t, ui, cmdq, theme_sel, theme_names, qfilter, sbucket)
         stdscr.refresh()
 
+        # Auto-switch from home to now as soon as audio begins streaming
+        if mode == "home" and status.get("state") in ("playing", "loading"):
+            mode = "now"
+
         ch = stdscr.getch()
         ch = _resolve_key(stdscr, ch)
         # In DJ mode, only 'now' key handler runs — filter/search/cmd are disabled
@@ -345,12 +365,15 @@ def _loop(stdscr) -> None:
             mode, cmdq, cmdmsg = _cmd_key(ch, mode, cmdq, cmdmsg)
         elif mode == "search":
             mode, sq, sresults, ssel, ssearching, smsg, sbucket = _search_key(
-                ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket)
+                ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket, ui=ui)
         elif mode == "theme":
             mode, theme_sel, theme_saved = _theme_key(
                 ch, mode, theme_sel, theme_names, theme_saved)
         elif mode == "filter":
             mode, qfilter = _filter_key(ch, mode, qfilter)
+        elif mode == "home":
+            mode, sq, sresults, ssel, ssearching, smsg, sbucket = _home_key(
+                ch, mode, status, ui, sq, sresults, ssel, ssearching, smsg, sbucket)
         else:
             mode = _now_key(ch, mode, status, ui, qfilter)
 
@@ -500,8 +523,15 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     vis = _visible_queue(status, qfilter)
     is_dj = status.get("dj_mode", False)
 
-    if ch in (ord("q"), 27):
+    if ch in (ord("q"),):
         mode = "quit"  # sentinel: quit the TUI and stop playback
+    elif ch == 27:
+        if not vis:
+            mode = "home"
+        else:
+            mode = "quit"
+    elif ch in (ord("h"), getattr(curses, "KEY_HOME", -999)):
+        mode = "home"
     elif ch == ord("l"):
         if ui.get("layout") == "studio":
             ui["layout"] = "lyrics"
@@ -918,7 +948,7 @@ def _show_art(stdscr) -> None:
     stdscr.refresh()
 
 
-def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket):
+def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket, ui: dict | None = None):
     sugg = (sbucket or {}).get("suggest") or []
     sugg_sel = (sbucket or {}).get("sugg_sel", 0)
 
@@ -928,10 +958,15 @@ def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket):
         if sq or sresults or ssearching:
             sq, sresults, ssel, smsg, ssearching, sbucket = "", [], 0, "", False, {}
         else:
-            mode = "now"
+            if ui and ui.pop("_return_to_home", False):
+                mode = "home"
+            else:
+                mode = "now"
     elif ch in (10, 13, curses.KEY_ENTER):
         if sresults and not ssearching:
             _play_url(sresults[ssel]["url"])
+            if ui:
+                ui.pop("_return_to_home", None)
             mode = "now"
         else:
             if not sresults and sugg:
@@ -972,6 +1007,91 @@ def _search_key(ch, mode, sq, sresults, ssel, ssearching, smsg, sbucket):
             if sbucket is not None:
                 sbucket["sugg_sel"] = 0
             _start_suggest(sq, sbucket)
+    return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+
+def _home_key(ch: int, mode: str, status: dict, ui: dict,
+              sq: str, sresults: list, ssel: int, ssearching: bool,
+              smsg: str, sbucket: dict) -> tuple[str, str, list, int, bool, str, dict]:
+    if ch == -1:
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("q"),):
+        return "quit", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # ESC or Tab: switch to Studio Player
+    if ch in (27, 9):
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # Quick Mood Pills: 1-5
+    MOOD_MAP = {
+        ord("1"): "lofi beats chill",
+        ord("2"): "synthwave retrowave 80s",
+        ord("3"): "acoustic unplugged guitar chill",
+        ord("4"): "phonk drift night drive",
+        ord("5"): "japanese lofi anime",
+    }
+    if ch in MOOD_MAP:
+        query = MOOD_MAP[ch]
+        _bg_send("mood", query)
+        ui["viz_toast"] = f"MOOD: {query.upper()}"
+        ui["viz_toast_t"] = time.monotonic()
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # Quick Actions
+    if ch in (ord("r"), ord("R")):
+        _bg_send("radio")
+        ui["viz_toast"] = "SMART RADIO: LAUNCHED"
+        ui["viz_toast_t"] = time.monotonic()
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("f"), ord("F")):
+        _bg_send("favs", "play")
+        ui["viz_toast"] = "FAVORITES: PLAYING"
+        ui["viz_toast_t"] = time.monotonic()
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("j"), ord("J")):
+        _bg_send("dj", "")
+        ui["viz_toast"] = "PIONEER CDJ DECK: READY"
+        ui["viz_toast_t"] = time.monotonic()
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("d"), ord("D")):
+        _bg_send("focus", "lofi beats")
+        ui["viz_toast"] = "FOCUS OS: 60M SESSION"
+        ui["viz_toast_t"] = time.monotonic()
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("h"), ord("H")):
+        recents = _load_recent_history(limit=1)
+        if recents:
+            target = recents[0].get("url") or recents[0].get("title")
+            if target:
+                _bg_send("play", target)
+                ui["viz_toast"] = f"RESUMING: {recents[0].get('title', 'LAST SESSION')[:30]}"
+                ui["viz_toast_t"] = time.monotonic()
+                return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+        ui["viz_toast"] = "NO PREVIOUS SESSION FOUND"
+        ui["viz_toast_t"] = time.monotonic()
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("t"), ord("T")):
+        return "theme", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # Pressing / or Enter: open empty search
+    if ch in (ord("/"), 10, 13, curses.KEY_ENTER):
+        ui["_return_to_home"] = True
+        return "search", "", [], 0, False, "", {}
+
+    # Any other printable character: start searching immediately with that character!
+    if 32 <= ch <= 126:
+        ui["_return_to_home"] = True
+        init_c = chr(ch)
+        sbucket = sbucket or {}
+        _start_suggest(init_c, sbucket)
+        return "search", init_c, [], 0, False, "", sbucket
+
     return mode, sq, sresults, ssel, ssearching, smsg, sbucket
 
 
@@ -1054,6 +1174,10 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
           amp_t: float, ui: dict, cmdq: str = "",
           theme_sel: int = 0, theme_names: list | None = None,
           qfilter: str = "", sbucket: dict | None = None) -> None:
+    if mode == "home":
+        _draw_home(stdscr, status, ui, h, w, amp_t)
+        return
+
     hide_hdr = bool(ui.get("hide_header"))
     hide_viz = bool(ui.get("hide_viz"))
     hide_ftr = bool(ui.get("hide_footer"))
@@ -2829,6 +2953,220 @@ def _draw_mini_player(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: flo
     hint = " space pause · tab/m mini off · n/p next/prev · +/- vol · ←/→ seek · v viz · P party "
     try:
         stdscr.addstr(h - 1, max(0, (w - len(hint)) // 2), hint[: max(1, w - 2)], curses.color_pair(6) | curses.A_DIM)
+    except curses.error:
+        pass
+
+
+def _load_recent_history(limit: int = 5) -> list[dict]:
+    """Load the most recent played tracks from history.json."""
+    try:
+        from .queue import HISTORY_FILE
+        if HISTORY_FILE.exists():
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data[:limit]
+    except Exception:
+        pass
+    return []
+
+
+def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.0) -> None:
+    """Premier-tier Studio Launchpad / Discover Home for Skye Music OS."""
+    W = max(1, w - 2)
+    # Clear entire canvas safely
+    for r in range(0, max(1, h - 1)):
+        try:
+            stdscr.addstr(r, 0, " " * W, curses.color_pair(6))
+        except curses.error:
+            pass
+
+    # Colors
+    C_PRI = curses.color_pair(1) | curses.A_BOLD   # Theme primary
+    C_ACC = curses.color_pair(3) | curses.A_BOLD   # Accent / Cyan
+    C_CUR = curses.color_pair(2) | curses.A_BOLD   # Green / Active
+    C_YEL = curses.color_pair(5) | curses.A_BOLD   # Gold / Title
+    C_DIM = curses.color_pair(6) | curses.A_DIM    # Dim grey
+    C_TXT = curses.color_pair(6)                   # Body text
+
+    # Safe bounds check for compact terminals
+    if h < 14 or w < 44:
+        try:
+            stdscr.addstr(1, 1, _truncate_to_width("♪ SKYE MUSIC OS", W - 2), C_PRI)
+            stdscr.addstr(3, 1, _truncate_to_width("❯ [ / ] Search songs, artists, URLs", W - 2), C_ACC)
+            stdscr.addstr(5, 1, _truncate_to_width("Quick: [1] Lofi  [2] Synth  [3] Acoustic  [4] Phonk", W - 2), C_YEL)
+            stdscr.addstr(7, 1, _truncate_to_width("Actions: [r] Radio  [f] Favs  [j] DJ  [h] History", W - 2), C_CUR)
+            stdscr.addstr(h - 1, 0, _truncate_to_width(" / or a-z search · 1-4 moods · r radio · esc studio · q quit", W), C_DIM)
+        except curses.error:
+            pass
+        return
+
+    row = 1
+    # ── 1. Hero Title / OS Badge (Row 1-4) ──────────────────────────────
+    hero_title = " ♪  S K Y E   M U S I C   O S "
+    version_tag = "v2.4 · STUDIO HIFI"
+    hero_inner = max(10, W - 4)
+    hero_pad = max(0, hero_inner - _display_width(hero_title) - _display_width(version_tag))
+    bar_hero = "─" * (W - 2)
+    hero_top = f"╭{bar_hero}╮"
+    inner_hero = _pad_to_width(_truncate_to_width(hero_title + " " * hero_pad + version_tag, hero_inner), hero_inner)
+    hero_mid = f"│ {inner_hero} │"
+
+    # Sub-status pills
+    pill_engine = "[CORE: MPV IPC 320kbps]"
+    pill_remote = "[REMOTE: READY]"
+    pill_output = "[OUTPUT: LOSSLESS AUDIO]"
+    pills_text = f"  {pill_engine}   {pill_remote}   {pill_output}"
+    inner_pills = _pad_to_width(pills_text, hero_inner)
+    hero_pills = f"│ {inner_pills} │"
+    hero_bot = f"╰{bar_hero}╯"
+
+    try:
+        stdscr.addstr(row, 0, hero_top, C_PRI)
+        stdscr.addstr(row + 1, 0, hero_mid, C_PRI)
+        stdscr.addstr(row + 2, 0, hero_pills, C_ACC)
+        stdscr.addstr(row + 3, 0, hero_bot, C_PRI)
+    except curses.error:
+        pass
+    row += 4
+
+    # ── 2. Spotlight Search Box (Row row to row + 2) ─────────────────────
+    srch_prompt = " ❯ 🔍  Search song, artist, playlist, or YouTube URL..."
+    srch_hint = "[Type any letter or /]"
+    srch_inner = max(10, W - 4)
+    srch_pad = max(0, srch_inner - _display_width(srch_prompt) - _display_width(srch_hint))
+    bar_srch = "─" * max(0, W - 22)
+    srch_top = f"╭─ SPOTLIGHT SEARCH {bar_srch}╮"
+    inner_srch = _pad_to_width(_truncate_to_width(srch_prompt + " " * srch_pad + srch_hint, srch_inner), srch_inner)
+    srch_mid = f"│ {inner_srch} │"
+    srch_bot = f"╰{bar_hero}╯"
+
+    try:
+        stdscr.addstr(row, 0, srch_top, C_ACC)
+        stdscr.addstr(row + 1, 0, srch_mid, C_YEL)
+        stdscr.addstr(row + 2, 0, srch_bot, C_ACC)
+    except curses.error:
+        pass
+    row += 3
+
+    # ── 3. Quick Mood Pills (Row row) ───────────────────────────────────
+    moods_line = "  Quick Moods:  [1] ⚡ Lofi   [2] 🌌 Synthwave   [3] ☕ Acoustic   [4] 🚀 Phonk   [5] 🎌 Anime"
+    try:
+        stdscr.addstr(row, 0, _truncate_to_width(moods_line, W), C_YEL)
+    except curses.error:
+        pass
+    row += 2
+
+    # ── 4. Split Grid: Actions (Left) & Recent Sessions (Right) ──────────
+    left_w = min(36, max(26, int(W * 0.44)))
+    right_w = max(18, W - left_w - 2)
+
+    card_rows = min(8, max(4, h - row - 5))
+
+    # Left Card: Instant Dispatch
+    actions = [
+        ("[ r ]", "📻  Daily Smart Radio"),
+        ("[ h ]", "📜  Resume Last Session"),
+        ("[ f ]", "♥   Favorites Vault"),
+        ("[ j ]", "🎧  Pioneer CDJ DJ Console"),
+        ("[ d ]", "🎯  60m Focus Pomodoro"),
+        ("[ t ]", "🎨  Theme Selector"),
+    ]
+
+    # Right Card: Recents from History
+    recents = _load_recent_history(limit=max(1, card_rows - 2))
+
+    bar_l = "─" * max(0, left_w - 22)
+    bar_r = "─" * max(0, right_w - 27)
+
+    try:
+        stdscr.addstr(row, 0, f"╭─ INSTANT DISPATCH {bar_l}╮", C_CUR)
+        stdscr.addstr(row, left_w + 1, f"╭─ JUMP BACK IN (RECENTS) {bar_r}╮", C_ACC)
+    except curses.error:
+        pass
+
+    for i in range(card_rows - 2):
+        r_y = row + 1 + i
+        # Left card content
+        if i < len(actions):
+            key, desc = actions[i]
+            act_text = f"  {key} {desc}"
+        else:
+            act_text = ""
+        l_line = f"│ {_pad_to_width(act_text, left_w - 4)} │"
+        try:
+            stdscr.addstr(r_y, 0, l_line, C_CUR if "[" in act_text else C_TXT)
+        except curses.error:
+            pass
+
+        # Right card content
+        if i < len(recents):
+            rc = recents[i]
+            t_name = rc.get("title") or "Unknown Track"
+            dur = _fmt_time(rc.get("duration"))
+            dur_str = f" {dur}" if dur and right_w > 32 else ""
+            t_avail = max(1, right_w - 4 - 4 - _display_width(dur_str))
+            t_disp = _truncate_to_width(t_name, t_avail)
+            pad_rec = " " * max(0, right_w - 4 - 4 - _display_width(t_disp) - _display_width(dur_str))
+            rec_text = f" {i + 1}. {t_disp}{pad_rec}{dur_str}"
+        elif i == 0 and not recents:
+            rec_text = " (no recent history yet · play something!)"
+        else:
+            rec_text = ""
+        r_line = f"│ {_pad_to_width(rec_text, right_w - 4)} │"
+        try:
+            stdscr.addstr(r_y, left_w + 1, r_line, C_TXT)
+        except curses.error:
+            pass
+
+    # Bottom borders of split grid
+    bot_y = row + card_rows - 1
+    bar_bot_l = "─" * (left_w - 2)
+    bar_bot_r = "─" * (right_w - 2)
+    try:
+        stdscr.addstr(bot_y, 0, f"╰{bar_bot_l}╯", C_CUR)
+        stdscr.addstr(bot_y, left_w + 1, f"╰{bar_bot_r}╯", C_ACC)
+    except curses.error:
+        pass
+    row = bot_y + 1
+
+    # ── 5. Ambient Radar & Soundwave (if space permits) ──────────────────
+    remain_h = (h - 1) - row
+    if remain_h >= 3:
+        DOTS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        bw_chars = []
+        for x in range(W - 4):
+            v = (math.sin(amp_t * 2.5 + x * 0.12) * 0.5 + 0.5)
+            idx = int(v * (len(DOTS) - 1))
+            bw_chars.append(DOTS[idx] if x % 2 == 0 else "─")
+        wave_str = "".join(bw_chars)
+
+        standby_badge = " ░▒▓█ [STANDBY AUDIO RADAR]  Type to Search · 1-5 Moods · r Radio · ESC Studio █▓▒░ "
+        bar_radar = "─" * max(0, W - 19)
+        try:
+            stdscr.addstr(row, 0, f"╭─ AMBIENT RADAR {bar_radar}╮", C_PRI)
+            if remain_h >= 4:
+                stdscr.addstr(row + 1, 0, f"│ {_pad_to_width(_truncate_to_width(standby_badge, W - 4), W - 4)} │", C_YEL)
+                stdscr.addstr(row + 2, 0, f"│ {_pad_to_width(_truncate_to_width(wave_str, W - 4), W - 4)} │", C_ACC)
+                stdscr.addstr(row + 3, 0, f"╰{bar_hero}╯", C_PRI)
+            else:
+                stdscr.addstr(row + 1, 0, f"│ {_pad_to_width(_truncate_to_width(wave_str, W - 4), W - 4)} │", C_ACC)
+                stdscr.addstr(row + 2, 0, f"╰{bar_hero}╯", C_PRI)
+        except curses.error:
+            pass
+
+    # ── 6. Bottom Keybinds Hint (Row h - 1) ──────────────────────────────
+    toast = ui.get("viz_toast")
+    toast_t = ui.get("viz_toast_t", 0.0)
+    if toast and (time.monotonic() - toast_t) < 2.0:
+        hint_str = f" ✦ {toast.upper()} ✦ "
+        hint_attr = C_YEL | curses.A_REVERSE
+    else:
+        hint_str = " / or a-z search · 1-5 moods · r radio · h resume · f favs · j DJ · d focus · esc studio · q quit "
+        hint_attr = C_DIM
+
+    try:
+        stdscr.addstr(h - 1, 0, _truncate_to_width(hint_str, W), hint_attr)
     except curses.error:
         pass
 

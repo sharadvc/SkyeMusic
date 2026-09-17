@@ -14,10 +14,12 @@ from tune.tui import (
     _draw,
     _draw_amp,
     _draw_header,
+    _draw_home,
     _draw_lyrics,
     _draw_mini_player,
     _draw_queue,
     _get_live_position,
+    _home_key,
     _now_key,
     _pad_to_width,
     _search_key,
@@ -596,9 +598,141 @@ class TestContainerClippingAndWideUnicode(unittest.TestCase):
                         f"In mode {mode}, call at row {y}, col {x} with width {dw} exceeds {W - 1}"
                     )
 
+class TestLaunchpadHome(unittest.TestCase):
+    def setUp(self):
+        self._orig_color_pair = getattr(curses, "color_pair", None)
+        curses.color_pair = lambda n: n
+
+    def tearDown(self):
+        if self._orig_color_pair is not None:
+            curses.color_pair = self._orig_color_pair
+
+    def test_draw_home_bounds(self):
+        sizes = [(30, 100), (24, 80), (16, 60), (12, 40)]
+        for h, w in sizes:
+            with self.subTest(size=f"{h}x{w}"):
+                scr = MockStdscr(h=h, w=w)
+                ui = {"viz_toast": "TEST TOAST"}
+                status = {"state": "idle"}
+                _draw_home(scr, status, h=h, w=w, amp_t=1.0, ui=ui)
+                self.assertGreater(len(scr.calls), 0)
+                for y, x, string, *extra in scr.calls:
+                    dw = _display_width(string)
+                    self.assertLessEqual(
+                        x + dw, w - 1,
+                        f"Size {h}x{w}: Call at row {y}, col {x} with width {dw} exceeds {w - 1}"
+                    )
+
+    def test_draw_home_content(self):
+        scr = MockStdscr(h=30, w=100)
+        ui = {}
+        status = {"state": "idle"}
+        _draw_home(scr, status, h=30, w=100, amp_t=1.0, ui=ui)
+        all_text = " ".join(call[2] for call in scr.calls)
+        self.assertIn("S K Y E   M U S I C   O S", all_text)
+        self.assertIn("SPOTLIGHT SEARCH", all_text)
+        self.assertIn("STANDBY AUDIO RADAR", all_text)
+        self.assertIn("Quick Moods", all_text)
+
+    def test_home_key_navigation_and_actions(self):
+        from unittest.mock import patch
+        ui = {}
+        status = {"state": "idle"}
+
+        # ESC and Tab switch to now
+        self.assertEqual(_home_key(27, "home", status, ui, "", [], 0, False, "", {})[0], "now")
+        self.assertEqual(_home_key(9, "home", status, ui, "", [], 0, False, "", {})[0], "now")
+
+        # 'q' quits
+        self.assertEqual(_home_key(ord("q"), "home", status, ui, "", [], 0, False, "", {})[0], "quit")
+
+        # 't' switches to theme
+        self.assertEqual(_home_key(ord("t"), "home", status, ui, "", [], 0, False, "", {})[0], "theme")
+
+        # '1' - '5' triggers mood and switches to now
+        with patch("tune.tui._bg_send") as mock_bg:
+            res = _home_key(ord("1"), "home", status, ui, "", [], 0, False, "", {})
+            self.assertEqual(res[0], "now")
+            mock_bg.assert_called_with("mood", "lofi beats chill")
+
+        with patch("tune.tui._bg_send") as mock_bg:
+            res = _home_key(ord("2"), "home", status, ui, "", [], 0, False, "", {})
+            self.assertEqual(res[0], "now")
+            mock_bg.assert_called_with("mood", "synthwave retrowave 80s")
+
+        with patch("tune.tui._bg_send") as mock_bg:
+            res = _home_key(ord("r"), "home", status, ui, "", [], 0, False, "", {})
+            self.assertEqual(res[0], "now")
+            mock_bg.assert_called_with("radio")
+
+        with patch("tune.tui._bg_send") as mock_bg:
+            res = _home_key(ord("f"), "home", status, ui, "", [], 0, False, "", {})
+            self.assertEqual(res[0], "now")
+            mock_bg.assert_called_with("favs", "play")
+
+        with patch("tune.tui._bg_send") as mock_bg:
+            res = _home_key(ord("j"), "home", status, ui, "", [], 0, False, "", {})
+            self.assertEqual(res[0], "now")
+            mock_bg.assert_called_with("dj", "")
+
+        with patch("tune.tui._bg_send") as mock_bg:
+            res = _home_key(ord("d"), "home", status, ui, "", [], 0, False, "", {})
+            self.assertEqual(res[0], "now")
+            mock_bg.assert_called_with("focus", "lofi beats")
+
+    def test_home_key_search_transitions(self):
+        from unittest.mock import patch
+        ui = {}
+        status = {"state": "idle"}
+
+        # '/' switches to search
+        res = _home_key(ord("/"), "home", status, ui, "", [], 0, False, "", {})
+        self.assertEqual(res[0], "search")
+        self.assertTrue(ui.get("_return_to_home"))
+
+        # Enter (10) switches to search
+        ui.clear()
+        res = _home_key(10, "home", status, ui, "", [], 0, False, "", {})
+        self.assertEqual(res[0], "search")
+        self.assertTrue(ui.get("_return_to_home"))
+
+        # Printable character transitions to search immediately with that query
+        ui.clear()
+        with patch("tune.tui._start_suggest"):
+            res = _home_key(ord("s"), "home", status, ui, "", [], 0, False, "", {})
+            self.assertEqual(res[0], "search")
+            self.assertEqual(res[1], "s")
+            self.assertTrue(ui.get("_return_to_home"))
+
+    def test_now_key_to_home_transitions(self):
+        ui = {}
+        # 'h' switches to home
+        status = {"state": "playing", "queue": [{"title": "Track 1"}]}
+        self.assertEqual(_now_key(ord("h"), "now", status, ui), "home")
+
+        # ESC with empty queue switches to home
+        status_empty = {"state": "idle", "queue": []}
+        self.assertEqual(_now_key(27, "now", status_empty, ui), "home")
+
+        # ESC with active queue returns quit
+        self.assertEqual(_now_key(27, "now", status, ui), "quit")
+
+    def test_cli_smart_routing(self):
+        from unittest.mock import patch
+        import tune.cli as cli
+
+        with patch("tune.cli.ensure_daemon"), \
+             patch("tune.cli.send_cmd", return_value={"ok": True, "data": {"title": "Starboy"}}), \
+             patch("sys.stdout"):
+            code = cli.run(["starboy"])
+            self.assertEqual(code, 0)
+
+        with patch("tune.cli.ensure_daemon"), \
+             patch("tune.tui.run") as mock_tui:
+            code = cli.run(["home"])
+            self.assertEqual(code, 0)
+            mock_tui.assert_called_with(initial_mode="home")
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
