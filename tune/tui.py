@@ -1024,23 +1024,67 @@ def _home_key(ch: int, mode: str, status: dict, ui: dict,
     # ESC or Tab: switch to Studio Player
     if ch in (27, 9):
         return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+        
+    # Selection navigation
+    if ch in (curses.KEY_DOWN, ord("j")):
+        ui["home_row"] = min(5, ui.get("home_row", -1) + 1)
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+    if ch in (curses.KEY_UP, ord("k")):
+        ui["home_row"] = max(0, ui.get("home_row", 0) - 1)
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+    if ch in (curses.KEY_LEFT, ord("h")):
+        ui["home_col"] = 0
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+    if ch in (curses.KEY_RIGHT, ord("l")):
+        ui["home_col"] = 1
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
 
-    # Quick Mood Pills: 1-5
-    MOOD_MAP = {
-        ord("1"): "lofi beats chill",
-        ord("2"): "synthwave retrowave 80s",
-        ord("3"): "acoustic unplugged guitar chill",
-        ord("4"): "phonk drift night drive",
-        ord("5"): "japanese lofi anime",
-    }
-    if ch in MOOD_MAP:
-        query = MOOD_MAP[ch]
-        _bg_send("mood", query)
-        ui["viz_toast"] = f"MOOD: {query.upper()}"
-        ui["viz_toast_t"] = time.monotonic()
-        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+    # Action selected item on Enter
+    if ch in (10, 13, curses.KEY_ENTER):
+        row = ui.get("home_row", -1)
+        col = ui.get("home_col", 0)
+        
+        if row == -1:
+            ui["_return_to_home"] = True
+            return "search", "", [], 0, False, "", {}
+            
+        if col == 0:
+            if row == 0:
+                _bg_send("radio")
+                ui["viz_toast"] = "SMART RADIO: LAUNCHED"
+            elif row == 1:
+                recents = _load_recent_history(limit=1)
+                if recents and (target := recents[0].get("url") or recents[0].get("title")):
+                    _bg_send("play", target)
+                    ui["viz_toast"] = f"RESUMING: {recents[0].get('title', 'LAST SESSION')[:30]}"
+                else:
+                    ui["viz_toast"] = "NO PREVIOUS SESSION FOUND"
+                    return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+            elif row == 2:
+                _bg_send("favs", "play")
+                ui["viz_toast"] = "FAVORITES: PLAYING"
+            elif row == 3:
+                _bg_send("dj", "")
+                ui["viz_toast"] = "PIONEER CDJ DECK: READY"
+            elif row == 4:
+                _bg_send("mood", "lofi beats chill")
+                ui["viz_toast"] = "MOOD: LOFI BEATS"
+            elif row == 5:
+                return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+            ui["viz_toast_t"] = time.monotonic()
+            return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+            
+        elif col == 1:
+            recents = _load_recent_history(limit=6)
+            if row < len(recents):
+                rc = recents[row]
+                if target := rc.get("url") or rc.get("title"):
+                    _bg_send("play", target)
+                    ui["viz_toast"] = f"RESUMING: {rc.get('title', 'TRACK')[:30]}"
+                    ui["viz_toast_t"] = time.monotonic()
+                    return "now", sq, sresults, ssel, ssearching, smsg, sbucket
 
-    # Quick Actions
+    # Quick Action Fallbacks (for backwards compat if they still use keyboard shortcuts)
     if ch in (ord("r"), ord("R")):
         _bg_send("radio")
         ui["viz_toast"] = "SMART RADIO: LAUNCHED"
@@ -1053,36 +1097,11 @@ def _home_key(ch: int, mode: str, status: dict, ui: dict,
         ui["viz_toast_t"] = time.monotonic()
         return "now", sq, sresults, ssel, ssearching, smsg, sbucket
 
-    if ch in (ord("j"), ord("J")):
-        _bg_send("dj", "")
-        ui["viz_toast"] = "PIONEER CDJ DECK: READY"
-        ui["viz_toast_t"] = time.monotonic()
-        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
-
-    if ch in (ord("d"), ord("D")):
-        _bg_send("focus", "lofi beats")
-        ui["viz_toast"] = "FOCUS OS: 60M SESSION"
-        ui["viz_toast_t"] = time.monotonic()
-        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
-
-    if ch in (ord("h"), ord("H")):
-        recents = _load_recent_history(limit=1)
-        if recents:
-            target = recents[0].get("url") or recents[0].get("title")
-            if target:
-                _bg_send("play", target)
-                ui["viz_toast"] = f"RESUMING: {recents[0].get('title', 'LAST SESSION')[:30]}"
-                ui["viz_toast_t"] = time.monotonic()
-                return "now", sq, sresults, ssel, ssearching, smsg, sbucket
-        ui["viz_toast"] = "NO PREVIOUS SESSION FOUND"
-        ui["viz_toast_t"] = time.monotonic()
-        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
-
     if ch in (ord("t"), ord("T")):
         return "theme", sq, sresults, ssel, ssearching, smsg, sbucket
 
-    # Pressing / or Enter: open empty search
-    if ch in (ord("/"), 10, 13, curses.KEY_ENTER):
+    # Pressing / open empty search
+    if ch == ord("/"):
         ui["_return_to_home"] = True
         return "search", "", [], 0, False, "", {}
 
@@ -2996,7 +3015,6 @@ def _load_recent_history(limit: int = 5) -> list[dict]:
 def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.0) -> None:
     """Ultra-minimal, clean Launchpad / Home for Skye Music OS."""
     W = max(1, w - 2)
-    # Clear entire canvas safely
     for r in range(0, max(1, h - 1)):
         try:
             stdscr.addstr(r, 0, " " * W, curses.color_pair(6))
@@ -3007,6 +3025,7 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
     C_ACC = curses.color_pair(3) | curses.A_BOLD   # Accent / Cyan
     C_DIM = curses.color_pair(6) | curses.A_DIM    # Dim grey
     C_TXT = curses.color_pair(6)                   # Body text
+    C_SEL = curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD # Selected item
 
     if h < 14 or w < 44:
         try:
@@ -3020,7 +3039,6 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
 
     center_col = max(0, w // 2)
 
-    # 1. Logo
     logo = "S K Y E"
     version = "STUDIO HIFI"
     
@@ -3035,15 +3053,19 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
             
     row += 4
 
-    # 2. Search Hint
+    # Search Hint
+    sel_row = ui.get("home_row", -1)
+    sel_col = ui.get("home_col", 0)
+    
     prompt = "Start typing to search YouTube or paste a URL..."
     try:
-        stdscr.addstr(row, max(0, center_col - len(prompt) // 2), prompt, C_TXT)
+        attr = C_SEL if sel_row == -1 else C_TXT
+        stdscr.addstr(row, max(0, center_col - len(prompt) // 2), prompt, attr)
         row += 4
     except curses.error:
         pass
 
-    # 3. Two columns: Shortcuts and Recent
+    # Two columns: Shortcuts and Recent
     left_w = 20
     right_w = 34
     total_w = left_w + right_w + 4
@@ -3073,9 +3095,13 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
         # Shortcuts column
         if i < len(shortcuts):
             key, label = shortcuts[i]
+            is_sel = (sel_row == i and sel_col == 0)
             try:
-                stdscr.addstr(r_y, start_x, f"{key:>3}", C_ACC)
-                stdscr.addstr(r_y, start_x + 4, label, C_TXT)
+                if is_sel:
+                    stdscr.addstr(r_y, start_x, f" {label.upper():<16}", C_SEL)
+                else:
+                    stdscr.addstr(r_y, start_x, f"{key:>3}", C_ACC)
+                    stdscr.addstr(r_y, start_x + 4, label, C_TXT)
             except curses.error:
                 pass
                 
@@ -3084,6 +3110,8 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
             rc = recents[i]
             t_name = rc.get("title") or "Unknown"
             dur = _fmt_time(rc.get("duration"))
+            is_sel = (sel_row == i and sel_col == 1)
+            
             if dur:
                 t_avail = max(1, right_w - 2 - len(dur))
                 t_disp = _truncate_to_width(t_name, t_avail)
@@ -3091,8 +3119,12 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
                 rec_text = f"{t_disp}{pad_rec}{dur}"
             else:
                 rec_text = _truncate_to_width(t_name, right_w)
+                
             try:
-                stdscr.addstr(r_y, start_x + left_w + 4, rec_text, C_TXT)
+                if is_sel:
+                    stdscr.addstr(r_y, start_x + left_w + 4, _pad_to_width(f" {t_name}", right_w)[:right_w], C_SEL)
+                else:
+                    stdscr.addstr(r_y, start_x + left_w + 4, rec_text, C_TXT)
             except curses.error:
                 pass
         elif i == 0 and not recents:
@@ -3103,7 +3135,6 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
 
     row += 8
 
-    # 4. Ambient wave at the very bottom (Clean, no borders)
     remain_h = (h - 1) - row
     if remain_h >= 2:
         DOTS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -3119,7 +3150,6 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
         except curses.error:
             pass
 
-    # 5. Bottom Keybinds Hint (Row h - 1)
     toast = ui.get("viz_toast")
     toast_t = ui.get("viz_toast_t", 0.0)
     if toast and (time.monotonic() - toast_t) < 2.0:
