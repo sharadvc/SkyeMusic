@@ -320,7 +320,7 @@ def run(argv: list[str]) -> int:
     if args.cmd is None:
         ensure_daemon()
         from .tui import run as tui_run
-        tui_run()
+        tui_run(initial_mode="home")
         return 0
     if args.cmd == "home":
         ensure_daemon()
@@ -334,7 +334,7 @@ def run(argv: list[str]) -> int:
         except Exception:
             pass
         from .tui import run as tui_run
-        tui_run()
+        tui_run(initial_mode="now")
         return 0
 
     if args.cmd == "daemon":
