@@ -273,11 +273,13 @@ def _loop(stdscr, initial_mode: str | None = None) -> None:
         dt = min(0.25, now_t - last_tick)
         last_tick = now_t
         st = status.get("state")
-        if st == "playing":
-            amp_t += dt
+        if st in ("playing", "paused"):
+            # 1v1 Sync: visualizer amplitude clock tracks exact song position.
+            amp_t = _get_live_position(status, ui)
         elif st == "loading":
             amp_t += dt * 0.4  # slow crawl while buffering
-        # paused / idle: freeze the amplifier
+        else:
+            amp_t += dt * 0.1  # idle ambient movement
 
         # Party Mode: Dynamic RGB Light Show Theme Cycling
         if ui.get("party_mode") and status.get("state") == "playing" and mode != "theme":
@@ -1800,8 +1802,25 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         mode = "spectrum"
 
     state = status.get("state", "idle")
+    
+    # 1v1 Sync: Deterministic track-specific energy and tempo (BPM)
+    # Using track title/url hash to generate consistent visualizer behavior for the same track
+    track_id_str = status.get("url", "") + status.get("title", "")
+    track_seed = abs(hash(track_id_str)) if track_id_str else 0
+    bps = (85.0 + (track_seed % 80)) / 60.0
+    
+    # Base amplitude modulated by track's dynamic volume envelope
+    try:
+        sec = int(max(0.0, amp_t))
+    except (ValueError, OverflowError, TypeError):
+        sec = 0
+    frac = max(0.0, amp_t - sec) if isinstance(amp_t, (int, float)) else 0.0
+    e1 = (((sec + track_seed) * 1103515245 + 12345) % 100) / 100.0
+    e2 = ((((sec + 1) + track_seed) * 1103515245 + 12345) % 100) / 100.0
+    energy = e1 * (1.0 - frac) + e2 * frac
+    
     vol = status.get("volume", 80) if status.get("volume") is not None else 80
-    amp = min(1.0, 0.35 + (vol / 160.0))
+    amp = min(1.0, (0.35 + (vol / 160.0)) * (0.6 + 0.6 * energy))
     aw = max(1, w - 2)
 
     # Cleanly blank all visualizer container rows first to prevent ghosting or bleeding when switching modes
@@ -1875,7 +1894,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
             [0x40, 0x80],
         ]
 
-        beat = (math.sin(amp_t * 2.05 * math.pi) + 1.0) * 0.5
+        beat = (math.sin(amp_t * bps * math.pi) + 1.0) * 0.5
         for x in range(px_w):
             y1 = (math.sin(amp_t * 3.8 + x * 0.07) * 0.65 +
                   math.cos(amp_t * 7.0 + x * 0.14) * 0.25 * beat)
@@ -1932,7 +1951,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         side_bands = max(3, min(32, (center_x - 3) // slot))
         max_sub = viz_h * 8
 
-        beat_kick = max(0.0, math.cos(amp_t * 2.05 * math.pi)) ** 3.5
+        beat_kick = max(0.0, math.cos(amp_t * bps * math.pi)) ** 3.5
 
         left_h = []
         right_h = []
@@ -2003,7 +2022,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
     if mode == "bars":
         max_sub = viz_h * 8
         heights = []
-        beat = max(0.0, math.cos(amp_t * 2.05 * math.pi)) ** 3.0
+        beat = max(0.0, math.cos(amp_t * bps * math.pi)) ** 3.0
         for x in range(aw):
             v = (math.sin(amp_t * 3.3 + x * 0.14) * 0.32 +
                  math.cos(amp_t * 5.1 - x * 0.08) * 0.26 +
@@ -2435,8 +2454,8 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         holds_state = [0] * num_bands
         ui["viz_holds"] = holds_state
 
-    beat_kick = max(0.0, math.cos(amp_t * 2.05 * math.pi)) ** 3.5
-    beat_snare = max(0.0, math.sin(amp_t * 2.05 * math.pi + 1.5)) ** 4.0
+    beat_kick = max(0.0, math.cos(amp_t * bps * math.pi)) ** 3.5
+    beat_snare = max(0.0, math.sin(amp_t * bps * math.pi + 1.5)) ** 4.0
 
     for i in range(num_bands):
         frac = i / max(1, num_bands - 1)
