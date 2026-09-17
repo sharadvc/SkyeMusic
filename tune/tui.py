@@ -2994,7 +2994,7 @@ def _load_recent_history(limit: int = 5) -> list[dict]:
 
 
 def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.0) -> None:
-    """Premier-tier Studio Launchpad / Discover Home for Skye Music OS."""
+    """Ultra-minimal, clean Launchpad / Home for Skye Music OS."""
     W = max(1, w - 2)
     # Clear entire canvas safely
     for r in range(0, max(1, h - 1)):
@@ -3003,194 +3003,132 @@ def _draw_home(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: float = 0.
         except curses.error:
             pass
 
-    # Colors
     C_PRI = curses.color_pair(1) | curses.A_BOLD   # Theme primary
     C_ACC = curses.color_pair(3) | curses.A_BOLD   # Accent / Cyan
-    C_CUR = curses.color_pair(2) | curses.A_BOLD   # Green / Active
-    C_YEL = curses.color_pair(5) | curses.A_BOLD   # Gold / Title
     C_DIM = curses.color_pair(6) | curses.A_DIM    # Dim grey
     C_TXT = curses.color_pair(6)                   # Body text
 
-    # Safe bounds check for compact terminals
     if h < 14 or w < 44:
         try:
-            stdscr.addstr(1, 1, _truncate_to_width("♪ SKYE MUSIC OS", W - 2), C_PRI)
-            stdscr.addstr(3, 1, _truncate_to_width("❯ [ / ] Search songs, artists, URLs", W - 2), C_ACC)
-            stdscr.addstr(5, 1, _truncate_to_width("Quick: [1] Lofi  [2] Synth  [3] Acoustic  [4] Phonk", W - 2), C_YEL)
-            stdscr.addstr(7, 1, _truncate_to_width("Actions: [r] Radio  [f] Favs  [j] DJ  [h] History", W - 2), C_CUR)
-            stdscr.addstr(h - 1, 0, _truncate_to_width(" / or a-z search · 1-4 moods · r radio · esc studio · q quit", W), C_DIM)
+            stdscr.addstr(1, 1, _truncate_to_width("S K Y E", W), C_PRI)
+            stdscr.addstr(3, 1, _truncate_to_width("❯ Type to search or paste a URL", W), C_ACC)
+            stdscr.addstr(5, 1, _truncate_to_width("1-5: Moods · r: Radio · j: DJ", W), C_DIM)
+            stdscr.addstr(h - 1, 0, _truncate_to_width(" esc: studio · q: quit", W), C_DIM)
         except curses.error:
             pass
         return
 
-    row = 1
-    # ── 1. Hero Title / OS Badge (Row 1-4) ──────────────────────────────
-    hero_title = " ♪  S K Y E   M U S I C   O S "
-    version_tag = "v2.4 · STUDIO HIFI"
-    hero_inner = max(10, W - 4)
-    hero_pad = max(0, hero_inner - _display_width(hero_title) - _display_width(version_tag))
-    bar_hero = "─" * (W - 2)
-    hero_top = f"╭{bar_hero}╮"
-    inner_hero = _pad_to_width(_truncate_to_width(hero_title + " " * hero_pad + version_tag, hero_inner), hero_inner)
-    hero_mid = f"│ {inner_hero} │"
+    center_col = max(0, w // 2)
 
-    # Sub-status pills
-    pill_engine = "[CORE: MPV IPC 320kbps]"
-    pill_remote = "[REMOTE: READY]"
-    pill_output = "[OUTPUT: LOSSLESS AUDIO]"
-    pills_text = f"  {pill_engine}   {pill_remote}   {pill_output}"
-    inner_pills = _pad_to_width(pills_text, hero_inner)
-    hero_pills = f"│ {inner_pills} │"
-    hero_bot = f"╰{bar_hero}╯"
-
+    # 1. Logo
+    logo = "S K Y E"
+    version = "STUDIO HIFI"
+    
+    start_row = max(2, (h // 2) - 8)
+    row = start_row
+    
     try:
-        stdscr.addstr(row, 0, hero_top, C_PRI)
-        stdscr.addstr(row + 1, 0, hero_mid, C_PRI)
-        stdscr.addstr(row + 2, 0, hero_pills, C_ACC)
-        stdscr.addstr(row + 3, 0, hero_bot, C_PRI)
+        stdscr.addstr(row, max(0, center_col - len(logo) // 2), logo, C_PRI)
+        stdscr.addstr(row + 1, max(0, center_col - len(version) // 2), version, C_ACC | curses.A_DIM)
     except curses.error:
         pass
+            
     row += 4
 
-    # ── 2. Spotlight Search Box (Row row to row + 2) ─────────────────────
-    srch_prompt = " ❯ 🔍  Search song, artist, playlist, or YouTube URL..."
-    srch_hint = "[Type any letter or /]"
-    srch_inner = max(10, W - 4)
-    srch_pad = max(0, srch_inner - _display_width(srch_prompt) - _display_width(srch_hint))
-    bar_srch = "─" * max(0, W - 22)
-    srch_top = f"╭─ SPOTLIGHT SEARCH {bar_srch}╮"
-    inner_srch = _pad_to_width(_truncate_to_width(srch_prompt + " " * srch_pad + srch_hint, srch_inner), srch_inner)
-    srch_mid = f"│ {inner_srch} │"
-    srch_bot = f"╰{bar_hero}╯"
-
+    # 2. Search Hint
+    prompt = "Start typing to search YouTube or paste a URL..."
     try:
-        stdscr.addstr(row, 0, srch_top, C_ACC)
-        stdscr.addstr(row + 1, 0, srch_mid, C_YEL)
-        stdscr.addstr(row + 2, 0, srch_bot, C_ACC)
+        stdscr.addstr(row, max(0, center_col - len(prompt) // 2), prompt, C_TXT)
+        row += 4
     except curses.error:
         pass
-    row += 3
 
-    # ── 3. Quick Mood Pills (Row row) ───────────────────────────────────
-    moods_line = "  Quick Moods:  [1] ⚡ Lofi   [2] 🌌 Synthwave   [3] ☕ Acoustic   [4] 🚀 Phonk   [5] 🎌 Anime"
+    # 3. Two columns: Shortcuts and Recent
+    left_w = 20
+    right_w = 34
+    total_w = left_w + right_w + 4
+    start_x = max(0, center_col - total_w // 2)
+
     try:
-        stdscr.addstr(row, 0, _truncate_to_width(moods_line, W), C_YEL)
+        stdscr.addstr(row, start_x + 4, "SHORTCUTS", C_DIM)
+        stdscr.addstr(row, start_x + left_w + 4, "RECENT", C_DIM)
+        row += 2
     except curses.error:
         pass
-    row += 2
 
-    # ── 4. Split Grid: Actions (Left) & Recent Sessions (Right) ──────────
-    left_w = min(36, max(26, int(W * 0.44)))
-    right_w = max(18, W - left_w - 2)
-
-    card_rows = min(8, max(4, h - row - 5))
-
-    # Left Card: Instant Dispatch
-    actions = [
-        ("[ r ]", "📻  Daily Smart Radio"),
-        ("[ h ]", "📜  Resume Last Session"),
-        ("[ f ]", "♥   Favorites Vault"),
-        ("[ j ]", "🎧  Pioneer CDJ DJ Console"),
-        ("[ d ]", "🎯  60m Focus Pomodoro"),
-        ("[ t ]", "🎨  Theme Selector"),
+    shortcuts = [
+        ("r", "radio"),
+        ("h", "history"),
+        ("f", "favorites"),
+        ("j", "dj mode"),
+        ("1-5", "moods"),
+        ("esc", "studio")
     ]
+    
+    recents = _load_recent_history(limit=6)
 
-    # Right Card: Recents from History
-    recents = _load_recent_history(limit=max(1, card_rows - 2))
-
-    bar_l = "─" * max(0, left_w - 22)
-    bar_r = "─" * max(0, right_w - 27)
-
-    try:
-        stdscr.addstr(row, 0, f"╭─ INSTANT DISPATCH {bar_l}╮", C_CUR)
-        stdscr.addstr(row, left_w + 1, f"╭─ JUMP BACK IN (RECENTS) {bar_r}╮", C_ACC)
-    except curses.error:
-        pass
-
-    for i in range(card_rows - 2):
-        r_y = row + 1 + i
-        # Left card content
-        if i < len(actions):
-            key, desc = actions[i]
-            act_text = f"  {key} {desc}"
-        else:
-            act_text = ""
-        l_line = f"│ {_pad_to_width(act_text, left_w - 4)} │"
-        try:
-            stdscr.addstr(r_y, 0, l_line, C_CUR if "[" in act_text else C_TXT)
-        except curses.error:
-            pass
-
-        # Right card content
+    for i in range(6):
+        r_y = row + i
+        
+        # Shortcuts column
+        if i < len(shortcuts):
+            key, label = shortcuts[i]
+            try:
+                stdscr.addstr(r_y, start_x, f"{key:>3}", C_ACC)
+                stdscr.addstr(r_y, start_x + 4, label, C_TXT)
+            except curses.error:
+                pass
+                
+        # Recents column
         if i < len(recents):
             rc = recents[i]
-            t_name = rc.get("title") or "Unknown Track"
+            t_name = rc.get("title") or "Unknown"
             dur = _fmt_time(rc.get("duration"))
-            dur_str = f" {dur}" if dur and right_w > 32 else ""
-            t_avail = max(1, right_w - 4 - 4 - _display_width(dur_str))
-            t_disp = _truncate_to_width(t_name, t_avail)
-            pad_rec = " " * max(0, right_w - 4 - 4 - _display_width(t_disp) - _display_width(dur_str))
-            rec_text = f" {i + 1}. {t_disp}{pad_rec}{dur_str}"
+            if dur:
+                t_avail = max(1, right_w - 2 - len(dur))
+                t_disp = _truncate_to_width(t_name, t_avail)
+                pad_rec = " " * max(1, right_w - len(t_disp) - len(dur))
+                rec_text = f"{t_disp}{pad_rec}{dur}"
+            else:
+                rec_text = _truncate_to_width(t_name, right_w)
+            try:
+                stdscr.addstr(r_y, start_x + left_w + 4, rec_text, C_TXT)
+            except curses.error:
+                pass
         elif i == 0 and not recents:
-            rec_text = " (no recent history yet · play something!)"
-        else:
-            rec_text = ""
-        r_line = f"│ {_pad_to_width(rec_text, right_w - 4)} │"
-        try:
-            stdscr.addstr(r_y, left_w + 1, r_line, C_TXT)
-        except curses.error:
-            pass
+            try:
+                stdscr.addstr(r_y, start_x + left_w + 4, "(No history yet)", C_DIM)
+            except curses.error:
+                pass
 
-    # Bottom borders of split grid
-    bot_y = row + card_rows - 1
-    bar_bot_l = "─" * (left_w - 2)
-    bar_bot_r = "─" * (right_w - 2)
-    try:
-        stdscr.addstr(bot_y, 0, f"╰{bar_bot_l}╯", C_CUR)
-        stdscr.addstr(bot_y, left_w + 1, f"╰{bar_bot_r}╯", C_ACC)
-    except curses.error:
-        pass
-    row = bot_y + 1
+    row += 8
 
-    # ── 5. Ambient Radar & Soundwave (if space permits) ──────────────────
+    # 4. Ambient wave at the very bottom (Clean, no borders)
     remain_h = (h - 1) - row
-    if remain_h >= 3:
+    if remain_h >= 2:
         DOTS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         bw_chars = []
-        for x in range(W - 4):
+        for x in range(W):
             v = (math.sin(amp_t * 2.5 + x * 0.12) * 0.5 + 0.5)
             idx = int(v * (len(DOTS) - 1))
-            bw_chars.append(DOTS[idx] if x % 2 == 0 else "─")
+            bw_chars.append(DOTS[idx] if x % 2 == 0 else " ")
         wave_str = "".join(bw_chars)
 
-        standby_badge = " ░▒▓█ [STANDBY AUDIO RADAR]  Type to Search · 1-5 Moods · r Radio · ESC Studio █▓▒░ "
-        bar_radar = "─" * max(0, W - 19)
         try:
-            stdscr.addstr(row, 0, f"╭─ AMBIENT RADAR {bar_radar}╮", C_PRI)
-            if remain_h >= 4:
-                stdscr.addstr(row + 1, 0, f"│ {_pad_to_width(_truncate_to_width(standby_badge, W - 4), W - 4)} │", C_YEL)
-                stdscr.addstr(row + 2, 0, f"│ {_pad_to_width(_truncate_to_width(wave_str, W - 4), W - 4)} │", C_ACC)
-                stdscr.addstr(row + 3, 0, f"╰{bar_hero}╯", C_PRI)
-            else:
-                stdscr.addstr(row + 1, 0, f"│ {_pad_to_width(_truncate_to_width(wave_str, W - 4), W - 4)} │", C_ACC)
-                stdscr.addstr(row + 2, 0, f"╰{bar_hero}╯", C_PRI)
+            stdscr.addstr(h - 2, 0, _truncate_to_width(wave_str, W), C_ACC | curses.A_DIM)
         except curses.error:
             pass
 
-    # ── 6. Bottom Keybinds Hint (Row h - 1) ──────────────────────────────
+    # 5. Bottom Keybinds Hint (Row h - 1)
     toast = ui.get("viz_toast")
     toast_t = ui.get("viz_toast_t", 0.0)
     if toast and (time.monotonic() - toast_t) < 2.0:
         hint_str = f" ✦ {toast.upper()} ✦ "
-        hint_attr = C_YEL | curses.A_REVERSE
-    else:
-        hint_str = " / or a-z search · 1-5 moods · r radio · h resume · f favs · j DJ · d focus · esc studio · q quit "
-        hint_attr = C_DIM
-
-    try:
-        stdscr.addstr(h - 1, 0, _truncate_to_width(hint_str, W), hint_attr)
-    except curses.error:
-        pass
+        hint_attr = curses.color_pair(5) | curses.A_REVERSE | curses.A_BOLD
+        try:
+            stdscr.addstr(h - 1, max(0, center_col - len(hint_str)//2), hint_str, hint_attr)
+        except curses.error:
+            pass
 
 
 def _draw_theme_picker(stdscr, h: int, w: int, sel: int, names: list[str], top: int = 4) -> None:
