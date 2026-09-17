@@ -22,6 +22,7 @@ node_modules/
 *.local
 
 # Temporary scratch and manual test scripts in root
+scratch/
 scratch*.html
 test_*.py
 test_*.vtt

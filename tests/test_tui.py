@@ -10,13 +10,18 @@ from tune.tui import (
     _VIZ_MODES,
     _cur_lyr_line,
     _cycle_viz_mode,
+    _display_width,
     _draw,
+    _draw_amp,
+    _draw_header,
     _draw_lyrics,
     _draw_mini_player,
     _draw_queue,
     _get_live_position,
     _now_key,
+    _pad_to_width,
     _search_key,
+    _truncate_to_width,
 )
 
 
@@ -29,9 +34,17 @@ class MockStdscr:
     def addstr(self, y, x, string, *args):
         if y < 0 or y >= self.h:
             raise curses.error(f"Row {y} out of bounds (height={self.h})")
-        if x < 0 or x + len(string) > self.w:
-            raise curses.error(f"Col {x} + len {len(string)} exceeds width {self.w}")
+        dw = _display_width(string)
+        if x < 0 or x + dw > self.w:
+            raise curses.error(f"Col {x} + disp_w {dw} exceeds width {self.w}")
         self.calls.append((y, x, string, args))
+
+    def addch(self, y, x, ch, *args):
+        if y < 0 or y >= self.h:
+            raise curses.error(f"Row {y} out of bounds (height={self.h})")
+        if x < 0 or x >= self.w:
+            raise curses.error(f"Col {x} exceeds width {self.w}")
+        self.calls.append((y, x, str(ch), args))
 
 
 class TestTuiLayout(unittest.TestCase):
@@ -342,6 +355,246 @@ class TestTuiDualPaneRendering(unittest.TestCase):
         self.assertTrue(ui.get("art_mode"))
         _now_key(ord("a"), "now", status, ui)
         self.assertFalse(ui.get("art_mode"))
+
+
+class TestVisualizerContainment(unittest.TestCase):
+    def setUp(self):
+        self._orig_color_pair = getattr(curses, "color_pair", None)
+        curses.color_pair = lambda n: n
+
+    def tearDown(self):
+        if self._orig_color_pair is not None:
+            curses.color_pair = self._orig_color_pair
+
+    def test_all_visualizer_modes_strict_container_containment(self):
+        """Verify that every one of the 12 visualizer modes renders strictly
+        within viz_top to viz_top + viz_h - 1 and within columns 0 to w - 2."""
+        status = {
+            "state": "playing",
+            "title": "Neon Horizon",
+            "volume": 85,
+            "duration": 200.0,
+            "position": 50.0,
+        }
+        viz_top = 4
+        viz_h = 5
+        W = 100
+        H = 30
+
+        for mode in _VIZ_MODES:
+            with self.subTest(mode=mode):
+                scr = MockStdscr(h=H, w=W)
+                ui = {"viz_mode": mode}
+                _draw_amp(scr, status, amp_t=1.45, w=W, ui=ui, viz_top=viz_top, viz_h=viz_h, total_h=H)
+
+                self.assertGreater(len(scr.calls), 0, f"Mode {mode} produced no render calls")
+                for y, x, string, *extra in scr.calls:
+                    self.assertGreaterEqual(
+                        y, viz_top,
+                        f"Mode {mode} wrote above container at row {y} (viz_top={viz_top})"
+                    )
+                    self.assertLess(
+                        y, viz_top + viz_h,
+                        f"Mode {mode} wrote below container at row {y} (viz_bottom={viz_top + viz_h})"
+                    )
+                    self.assertGreaterEqual(x, 0)
+                    dw = _display_width(string)
+                    self.assertLessEqual(
+                        x + dw, W - 1,
+                        f"Mode {mode} wrote past right edge: col {x} + width {dw} = {x + dw} > {W - 1}"
+                    )
+
+    def test_all_modes_paused_state_containment(self):
+        """Verify that paused state across all modes keeps badges and visualizers strictly inside boundaries."""
+        status = {
+            "state": "paused",
+            "title": "Neon Horizon",
+            "volume": 80,
+            "duration": 200.0,
+            "position": 50.0,
+        }
+        viz_top = 4
+        viz_h = 5
+        W = 90
+        H = 28
+
+        for mode in _VIZ_MODES:
+            with self.subTest(mode=mode):
+                scr = MockStdscr(h=H, w=W)
+                ui = {"viz_mode": mode}
+                _draw_amp(scr, status, amp_t=2.0, w=W, ui=ui, viz_top=viz_top, viz_h=viz_h, total_h=H)
+
+                for y, x, string, *extra in scr.calls:
+                    self.assertGreaterEqual(y, viz_top)
+                    self.assertLess(y, viz_top + viz_h)
+                    self.assertLessEqual(x + _display_width(string), W - 1)
+
+    def test_idle_and_loading_states_containment(self):
+        """Verify that idle and loading states never exceed container boundaries."""
+        viz_top = 4
+        viz_h = 5
+        W = 85
+        H = 25
+
+        for state in ("idle", "loading"):
+            scr = MockStdscr(h=H, w=W)
+            status = {"state": state, "volume": 70}
+            ui = {"viz_mode": "spectrum"}
+            _draw_amp(scr, status, amp_t=0.5, w=W, ui=ui, viz_top=viz_top, viz_h=viz_h, total_h=H)
+
+            for y, x, string, *extra in scr.calls:
+                self.assertGreaterEqual(y, viz_top)
+                self.assertLess(y, viz_top + viz_h)
+                self.assertLessEqual(x + _display_width(string), W - 1)
+
+    def test_mode_switch_clears_ghost_artifacts(self):
+        """Switching from a taller mode (spectrum: 5 rows) to a shorter mode (vu: 2-3 rows)
+        must cleanly blank all rows upfront so no leftover artifacts remain."""
+        scr = MockStdscr(h=30, w=100)
+        status = {"state": "playing", "volume": 80}
+        viz_top = 4
+        viz_h = 5
+
+        # Render spectrum first
+        _draw_amp(scr, status, amp_t=1.0, w=100, ui={"viz_mode": "spectrum"}, viz_top=viz_top, viz_h=viz_h, total_h=30)
+        # Now render vu on the same screen (simulating frame updates)
+        scr_calls_len = len(scr.calls)
+        _draw_amp(scr, status, amp_t=1.1, w=100, ui={"viz_mode": "vu"}, viz_top=viz_top, viz_h=viz_h, total_h=30)
+
+        # Ensure all rows in viz_top..viz_top+viz_h were written with blank spaces during vu frame
+        vu_calls = scr.calls[scr_calls_len:]
+        cleared_rows = {call[0] for call in vu_calls if call[2] == " " * (100 - 2)}
+        expected_rows = set(range(viz_top, viz_top + viz_h))
+        self.assertTrue(expected_rows.issubset(cleared_rows), "All visualizer rows must be cleared upfront on each frame")
+
+
+class TestContainerClippingAndWideUnicode(unittest.TestCase):
+    def setUp(self):
+        self._orig_color_pair = getattr(curses, "color_pair", None)
+        curses.color_pair = lambda n: n
+
+    def tearDown(self):
+        if self._orig_color_pair is not None:
+            curses.color_pair = self._orig_color_pair
+
+    def test_queue_wide_unicode_never_crosses_divider(self):
+        """Track titles with wide CJK, devanagari, or emojis must never overflow avail_w."""
+        scr = MockStdscr(h=30, w=100)
+        left_w = 46
+        status = {
+            "current_index": 0,
+            "queue_len": 3,
+            "queue": [
+                {"title": "こんにちは世界 - 超長タイトルテスト用テキストです", "channel": "チャンネルアーティスト", "duration": 180.0},
+                {"title": "⚡🔥🚀 Extreme Bass Drop · DJ Ultra Hyper Boost 🎧💥", "channel": "DJ Thunder ⚡", "duration": 240.0},
+                {"title": "तेरे बिना - बहुत लम्बा गाना जो कभी खत्म नहीं होता", "channel": "ए आर रहमान", "duration": 310.0},
+            ],
+        }
+        _draw_queue(scr, status, h=30, w=100, qsel=0, top=6, left=0, max_w=left_w, bottom=29)
+
+        for y, x, string, *extra in scr.calls:
+            dw = _display_width(string)
+            self.assertLessEqual(
+                x + dw, left_w,
+                f"Queue row at y={y} exceeded divider left_w={left_w}: col {x} + disp_w {dw} = {x + dw}"
+            )
+
+    def test_lyrics_wide_unicode_never_crosses_right_margin(self):
+        """Lyrics with CJK characters and karaoke highlight must strictly stay within right pane."""
+        scr = MockStdscr(h=30, w=100)
+        left_w = 46
+        right_w = 100 - left_w - 1  # 53
+        left = left_w + 1  # 47
+        status = {"state": "playing", "position": 12.5, "duration": 200.0}
+        ui = {
+            "lyr_lines": [
+                {"start": 10.0, "end": 15.0, "text": "桜の花びらが舞い散る夜空に君を想うよ", "synced": True},
+                {"start": 15.0, "end": 20.0, "text": "長い長い道のりを歩いてここまで辿り着いた", "synced": True},
+            ],
+            "lyr_offset": 0.0,
+        }
+        _draw_lyrics(scr, status, ui, h=30, w=100, top=6, left=left, max_w=right_w, bottom=29)
+
+        for y, x, string, *extra in scr.calls:
+            dw = _display_width(string)
+            self.assertGreaterEqual(x, left, f"Lyrics wrote into left pane at col {x}")
+            self.assertLessEqual(
+                x + dw, 100 - 1,
+                f"Lyrics exceeded screen right margin: col {x} + disp_w {dw} = {x + dw} > {100 - 1}"
+            )
+
+    def test_header_wide_unicode_never_wraps(self):
+        """Header row 0..3 with emojis and wide CJK titles must never exceed w - 2."""
+        scr = MockStdscr(h=30, w=80)
+        status = {
+            "state": "playing",
+            "title": "🎵 超長特大タイトル 🌸 桜の花が咲く頃に 🎧⚡ REMIX ULTRA BASS",
+            "position": 125.0,
+            "duration": 340.0,
+            "volume": 90,
+            "current_index": 0,
+            "queue_len": 5,
+            "dj_mode": True,
+            "shuffle": True,
+            "repeat": "all",
+        }
+        _draw_header(scr, status, w=80, amp_t=1.0)
+
+        for y, x, string, *extra in scr.calls:
+            dw = _display_width(string)
+            self.assertLessEqual(
+                x + dw, 80 - 1,
+                f"Header row {y} exceeded terminal width: col {x} + disp_w {dw} = {x + dw} > {80 - 1}"
+            )
+
+    def test_full_draw_dual_pane_all_modes_no_container_bleed(self):
+        """Run full _draw across all 12 visualizer modes in dual-pane studio layout:
+        verifies that every screen element stays strictly within its container."""
+        W = 100
+        H = 30
+        left_w = int(W * 0.46)  # 46
+        status = {
+            "state": "playing",
+            "title": "テスト楽曲 - Wide Unicode & Emoji 🚀",
+            "position": 15.0,
+            "duration": 180.0,
+            "volume": 80,
+            "current_index": 0,
+            "queue_len": 2,
+            "queue": [
+                {"title": "Track 1 - 日本語タイトル", "channel": "アーティスト", "duration": 180.0},
+                {"title": "Track 2 - English Title", "channel": "Artist 2", "duration": 210.0},
+            ],
+        }
+
+        for mode in _VIZ_MODES:
+            with self.subTest(mode=mode):
+                scr = MockStdscr(h=H, w=W)
+                ui = {
+                    "layout": "studio",
+                    "viz_mode": mode,
+                    "lyr_lines": [
+                        {"start": 10.0, "end": 20.0, "text": "Karaoke active line 歌う", "synced": True}
+                    ],
+                    "qsel": 0,
+                }
+                _draw(
+                    scr, status, H, W, "now",
+                    sq="", sresults=[], ssel=0, ssearching=False, smsg="",
+                    amp_t=1.5, ui=ui
+                )
+
+                # Check divider │ at col left_w
+                dividers = [call for call in scr.calls if call[1] == left_w and call[2] == "│"]
+                self.assertGreater(len(dividers), 0)
+
+                # Check that no calls ever exceed W - 1 in display width
+                for y, x, string, *extra in scr.calls:
+                    dw = _display_width(string)
+                    self.assertLessEqual(
+                        x + dw, W - 1,
+                        f"In mode {mode}, call at row {y}, col {x} with width {dw} exceeds {W - 1}"
+                    )
 
 
 if __name__ == "__main__":

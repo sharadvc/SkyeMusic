@@ -20,6 +20,7 @@ import termios
 import threading
 import time
 import tty
+import unicodedata
 
 from .client import send_cmd
 
@@ -43,40 +44,45 @@ _REPEAT_ORDER = ["off", "all", "one"]
 _AMP_BLOCKS   = "▁▂▃▄▅▆▇█"
 
 
+def _char_width(ch: str) -> int:
+    """Return terminal column display width for a single unicode character."""
+    cp = ord(ch)
+    if cp < 32 or (0x7F <= cp < 0xA0):
+        return 0
+    cat = unicodedata.category(ch)
+    if cat in ("Mn", "Me", "Cf"):
+        return 0
+    ea = unicodedata.east_asian_width(ch)
+    if ea in ("W", "F"):
+        return 2
+    return 1
+
+
 def _display_width(s: str) -> int:
     """Calculate exact visual terminal display width of a string in columns."""
-    w = 0
+    return sum(_char_width(ch) for ch in s)
+
+
+def _truncate_to_width(s: str, max_w: int) -> str:
+    """Truncate text so its visual terminal display width does not exceed max_w."""
+    if max_w <= 0:
+        return ""
+    cur_w = 0
+    res = []
     for ch in s:
-        cp = ord(ch)
-        if (0x1F300 <= cp <= 0x1F9FF or
-            0x2600 <= cp <= 0x27BF or
-            0x2B00 <= cp <= 0x2BFF or
-            0x3000 <= cp <= 0x9FFF or
-            0xFF00 <= cp <= 0xFFEF):
-            w += 2
-        else:
-            w += 1
-    return w
+        w = _char_width(ch)
+        if cur_w + w > max_w:
+            break
+        cur_w += w
+        res.append(ch)
+    return "".join(res)
 
 
 def _pad_to_width(text: str, target_w: int) -> str:
     """Truncate or right-pad text so its visual terminal display width equals target_w."""
-    curr_w = 0
-    res = []
-    for ch in text:
-        cp = ord(ch)
-        ch_w = 2 if (
-            0x1F300 <= cp <= 0x1F9FF or
-            0x2600 <= cp <= 0x27BF or
-            0x2B00 <= cp <= 0x2BFF or
-            0x3000 <= cp <= 0x9FFF or
-            0xFF00 <= cp <= 0xFFEF
-        ) else 1
-        if curr_w + ch_w > target_w:
-            break
-        res.append(ch)
-        curr_w += ch_w
-    return "".join(res) + (" " * (target_w - curr_w))
+    t = _truncate_to_width(text, target_w)
+    tw = _display_width(t)
+    return t + (" " * max(0, target_w - tw))
 # ── Visualizer layout constants ──────────────────────────────────────────────
 _VIZ_ROWS  = 5   # number of rows the spectrum occupies (rows 4 … 4+VIZ_ROWS-1)
 _VIZ_ROW   = 4   # first row of the visualizer
@@ -1103,7 +1109,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         err = status.get("error")
         if err:
             try:
-                stdscr.addstr(sep_row, 0, (f" ✖ {err}")[:max(1, w - 2)], curses.color_pair(4) | curses.A_BOLD)
+                stdscr.addstr(sep_row, 0, _truncate_to_width(f" ✖ {err}", max(1, w - 2)), curses.color_pair(4) | curses.A_BOLD)
             except curses.error:
                 pass
         elif is_split:
@@ -1120,8 +1126,12 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
                 cur_m = ui.get("viz_mode") or _visualizer()
                 left_tag = f" ♯ QUEUE ({q_pos}) · {cur_m.upper()} "
 
-            left_fill = max(0, left_w - len(left_tag))
-            left_bar = (left_tag + "─" * left_fill)[:left_w]
+            left_tag_w = _display_width(left_tag)
+            left_fill = max(0, left_w - left_tag_w)
+            left_bar = _truncate_to_width(left_tag + "─" * left_fill, left_w)
+            lw_curr = _display_width(left_bar)
+            if lw_curr < left_w:
+                left_bar += "─" * (left_w - lw_curr)
 
             lines = ui.get("lyr_lines", [])
             is_synced = any(ln.get("synced", True) and ln.get("start") is not None for ln in lines)
@@ -1136,10 +1146,14 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             else:
                 right_tag = " [LYRICS] "
 
-            right_fill = max(0, right_w - len(right_tag))
-            right_bar = (right_tag + "─" * right_fill)[:right_w]
+            right_tag_w = _display_width(right_tag)
+            right_fill = max(0, right_w - right_tag_w)
+            right_bar = _truncate_to_width(right_tag + "─" * right_fill, right_w)
+            rw_curr = _display_width(right_bar)
+            if rw_curr < right_w:
+                right_bar += "─" * (right_w - rw_curr)
 
-            full_sep = (left_bar + "┬" + right_bar)[:max(1, w - 2)]
+            full_sep = _truncate_to_width(left_bar + "┬" + right_bar, max(1, w - 2))
             try:
                 stdscr.addstr(sep_row, 0, full_sep, curses.color_pair(1))
             except curses.error:
@@ -1162,9 +1176,9 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
             else:
                 cur_m = ui.get("viz_mode") or _visualizer()
                 label = f"QUEUE  ·  {cur_m.upper()}"
-            sep = f" {label} " + "─" * max(0, w - len(label) - 3)
+            sep = _truncate_to_width(f" {label} " + "─" * max(0, w - _display_width(label) - 3), max(1, w - 2))
             try:
-                stdscr.addstr(sep_row, 0, sep[:max(1, w - 2)], curses.color_pair(1))
+                stdscr.addstr(sep_row, 0, sep, curses.color_pair(1))
             except curses.error:
                 pass
 
@@ -1173,7 +1187,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
     elif mode == "theme":
         _draw_theme_picker(stdscr, h, w, theme_sel, theme_names or list(_THEMES), top=content_top)
         try:
-            stdscr.addstr(h - 1, 0, "↑/↓ browse (live) · enter apply · esc cancel"[:w - 1],
+            stdscr.addstr(h - 1, 0, _truncate_to_width("↑/↓ browse (live) · enter apply · esc cancel", max(1, w - 2)),
                           curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
@@ -1183,7 +1197,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         try:
             hint = " 🎧 [s/S] scratch · [e/E] filter · [b/B] bass drop · [f/F] fade next · [J] exit DJ "
 
-            stdscr.addstr(h - 1, 0, hint[:w - 1],
+            stdscr.addstr(h - 1, 0, _truncate_to_width(hint, max(1, w - 2)),
                           curses.color_pair(1) | curses.A_BOLD)
         except curses.error:
             pass
@@ -1198,19 +1212,19 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=left_w + 1, max_w=right_w, bottom=bottom_limit)
         if mode == "cmd":
             try:
-                stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[:w - 1],
+                stdscr.addstr(h - 1, 0, _truncate_to_width(":" + cmdq + "_", max(1, w - 2)),
                               curses.A_BOLD | curses.color_pair(3))
             except curses.error:
                 pass
         elif mode == "filter":
             try:
-                stdscr.addstr(h - 1, 0, "type to filter · enter keep · esc clear"[:w - 1],
+                stdscr.addstr(h - 1, 0, _truncate_to_width("type to filter · enter keep · esc clear", max(1, w - 2)),
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
         elif not hide_ftr:
             try:
-                stdscr.addstr(h - 1, 0, _NOW_HELP[:w - 1],
+                stdscr.addstr(h - 1, 0, _truncate_to_width(_NOW_HELP, max(1, w - 2)),
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
@@ -1226,8 +1240,7 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         _draw_lyrics(stdscr, status, ui, h, w, top=content_top, left=l_w + 1, max_w=r_w, bottom=bottom_limit)
         if not hide_ftr:
             try:
-                stdscr.addstr(h - 1, 0, ("space pause · tab layout · n/p next/prev · v viz · +/- vol · "
-                                         "l/esc back · q quit")[:w - 1],
+                stdscr.addstr(h - 1, 0, _truncate_to_width("space pause · tab layout · n/p next/prev · v viz · +/- vol · l/esc back · q quit", max(1, w - 2)),
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
@@ -1235,19 +1248,19 @@ def _draw(stdscr, status, h, w, mode, sq, sresults, ssel, ssearching, smsg,
         _draw_queue(stdscr, status, h, w, ui["qsel"], qfilter, top=content_top, bottom=bottom_limit, ui=ui)
         if mode == "cmd":
             try:
-                stdscr.addstr(h - 1, 0, (":" + cmdq + "_")[:w - 1],
+                stdscr.addstr(h - 1, 0, _truncate_to_width(":" + cmdq + "_", max(1, w - 2)),
                               curses.A_BOLD | curses.color_pair(3))
             except curses.error:
                 pass
         elif mode == "filter":
             try:
-                stdscr.addstr(h - 1, 0, "type to filter · enter keep · esc clear"[:w - 1],
+                stdscr.addstr(h - 1, 0, _truncate_to_width("type to filter · enter keep · esc clear", max(1, w - 2)),
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
         elif not hide_ftr:
             try:
-                stdscr.addstr(h - 1, 0, _NOW_HELP[:w - 1],
+                stdscr.addstr(h - 1, 0, _truncate_to_width(_NOW_HELP, max(1, w - 2)),
                               curses.color_pair(6) | curses.A_DIM)
             except curses.error:
                 pass
@@ -1267,17 +1280,17 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
     window = max(0, bottom - top)
     if window <= 0:
         return
-    avail_w = max(1, min(max_w - 1 if max_w is not None else (w - left - 2), w - left - 2))
+    pane_w = max(1, min(max_w - 1 if max_w is not None else (w - 1 - left), w - 1 - left))
 
     # Explicitly clear lyrics pane area to prevent leftover artifacts from previous frames
     for r in range(top, top + window):
         try:
-            stdscr.addstr(r, left, " " * avail_w, curses.color_pair(6))
+            stdscr.addstr(r, left, " " * pane_w, curses.color_pair(6))
         except curses.error:
             pass
     if ui.get("lyr_loading"):
         try:
-            stdscr.addstr(top, left, "  loading lyrics…"[:avail_w], curses.color_pair(6) | curses.A_DIM)
+            stdscr.addstr(top, left, _truncate_to_width("  loading lyrics…", pane_w), curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
         return
@@ -1285,7 +1298,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
     if not lines:
         note = ui.get("lyr_note") or "no lyrics available"
         try:
-            stdscr.addstr(top, left, ("  " + note)[:avail_w], curses.color_pair(4))
+            stdscr.addstr(top, left, _truncate_to_width("  " + note, pane_w), curses.color_pair(4))
         except curses.error:
             pass
         return
@@ -1304,14 +1317,14 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
             dots = "● " * (pulse_idx + 1) + "○ " * (2 - pulse_idx)
             off = ui.get("lyr_offset", 0.0)
             off_tag = f"  [{off:+.2f}s]" if abs(off) > 0.01 else ""
-            intro_msg = f"  ♫ [INTRO]  vocals in {int(round(rem))}s  {dots.strip()}{off_tag}"
+            intro_msg = _truncate_to_width(f"  ♫ [INTRO]  vocals in {int(round(rem))}s  {dots.strip()}{off_tag}", pane_w)
             try:
-                stdscr.addstr(top, left, intro_msg[:avail_w], curses.color_pair(5) | curses.A_BOLD)
+                stdscr.addstr(top, left, intro_msg, curses.color_pair(5) | curses.A_BOLD)
             except curses.error:
                 pass
             for i in range(0, min(len(lines), window - 1)):
                 row = top + 1 + i
-                text = ("  " + lines[i]["text"])[:avail_w]
+                text = _truncate_to_width("  " + lines[i]["text"], pane_w)
                 attr = curses.color_pair(6)
                 if i > 2:
                     attr |= curses.A_DIM
@@ -1327,7 +1340,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
             row = top + (i - start)
             text_raw = lines[i]["text"]
             pad = "  "
-            text_disp = (pad + text_raw)[:avail_w]
+            text_disp = _truncate_to_width(pad + text_raw, pane_w)
             ln = lines[i]
             if i == cur:
                 start_t = ln.get("start", 0.0)
@@ -1336,28 +1349,35 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
                 dur = max(0.001, end_t - start_t)
 
                 if pos < start_t:
-                    n_raw = 0
+                    frac = 0.0
                 elif pos <= end_t:
                     frac = min(1.0, max(0.0, (pos - start_t) / dur))
-                    n_raw = int(round(frac * len(text_raw)))
                 else:
-                    n_raw = len(text_raw)
+                    frac = 1.0
 
+                n_raw = int(round(frac * len(text_raw)))
                 n_raw = max(0, min(len(text_raw), n_raw))
-                n_disp = len(pad) + n_raw if n_raw > 0 else 0
-                n_disp = min(len(text_disp), n_disp)
+                n_chars = len(pad) + n_raw if n_raw > 0 else 0
+                n_chars = min(len(text_disp), n_chars)
+
+                part_rev = text_disp[:n_chars]
+                part_bold = text_disp[n_chars:]
+                w_rev = _display_width(part_rev)
+                w_bold = _display_width(part_bold)
+
                 try:
-                    if n_disp > 0:
-                        stdscr.addstr(row, left, text_disp[:n_disp], curses.color_pair(5) | curses.A_REVERSE)
-                    if n_disp < len(text_disp):
-                        stdscr.addstr(row, left + n_disp, text_disp[n_disp:], curses.color_pair(5) | curses.A_BOLD)
+                    if w_rev > 0:
+                        stdscr.addstr(row, left, part_rev, curses.color_pair(5) | curses.A_REVERSE)
+                    if w_bold > 0 and (left + w_rev + w_bold <= w - 1):
+                        stdscr.addstr(row, left + w_rev, part_bold, curses.color_pair(5) | curses.A_BOLD)
 
                     # Subtle beat pulse during instrumental pause between lines
                     if pos > end_t and (next_t - pos) >= 1.2:
                         pulse = int((time.monotonic() * 2.0) % 3)
                         p_str = " ·" * (pulse + 1)
-                        col_p = left + len(text_disp) + 1
-                        if col_p + len(p_str) < (left + avail_w):
+                        p_w = _display_width(p_str)
+                        col_p = left + w_rev + w_bold + 1
+                        if col_p + p_w <= (left + pane_w) and col_p + p_w < w:
                             stdscr.addstr(row, col_p, p_str, curses.color_pair(5) | curses.A_DIM)
                 except curses.error:
                     pass
@@ -1381,7 +1401,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
         scroll = max(0, min(max(0, len(lines) - window), ui.get("lyr_scroll", 0)))
         for i in range(scroll, min(len(lines), scroll + window)):
             row = top + (i - scroll)
-            text = ("  " + lines[i]["text"])[:avail_w]
+            text = _truncate_to_width("  " + lines[i]["text"], pane_w)
             try:
                 stdscr.addstr(row, left, text, curses.color_pair(6))
             except curses.error:
@@ -1403,7 +1423,7 @@ def _draw_dj_deck_tui(stdscr, status: dict, amp_t: float, w: int,
       Performance pads row
       LED light strip
     """
-    aw = max(1, w - 1)
+    aw = max(1, w - 2)
     state      = status.get("state", "idle")
     is_playing = state == "playing"
     pos        = float(status.get("position", 0) or 0)
@@ -1432,7 +1452,7 @@ def _draw_dj_deck_tui(stdscr, status: dict, amp_t: float, w: int,
     def put(row: int, col: int, text: str, attr=None) -> None:
         if row < viz_top or row >= total_h - 1 or col >= aw:
             return
-        text = text[:max(0, aw - col)]
+        text = _truncate_to_width(text, max(0, aw - col))
         if not text:
             return
         try:
@@ -1444,7 +1464,7 @@ def _draw_dj_deck_tui(stdscr, status: dict, amp_t: float, w: int,
         if row < viz_top or row >= total_h - 1:
             return
         try:
-            stdscr.addstr(row, 0, (ch * aw)[:aw], attr if attr is not None else C_D)
+            stdscr.addstr(row, 0, _truncate_to_width(ch * aw, aw), attr if attr is not None else C_D)
         except curses.error:
             pass
 
@@ -1657,18 +1677,28 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
     amp = min(1.0, 0.35 + (vol / 160.0))
     aw = max(1, w - 2)
 
+    # Cleanly blank all visualizer container rows first to prevent ghosting or bleeding when switching modes
+    for r in range(viz_top, viz_top + viz_h):
+        try:
+            stdscr.addstr(r, 0, " " * aw, curses.color_pair(6))
+        except curses.error:
+            pass
+
     # ── State 1: IDLE (ambient breathing wave) ──────────────────────────
     if state == "idle":
         for r in range(viz_h):
             row_idx = viz_top + (viz_h - 1 - r)
+            if row_idx >= viz_top + viz_h:
+                continue
             if r == 0:
                 chars = []
                 for x in range(aw):
                     v = (math.sin(amp_t * 0.9 + x * 0.12) + 1.0) * 0.5
                     idx = int(v * 3.0)
                     chars.append(_AMP_BLOCKS[idx])
+                line = _truncate_to_width("".join(chars), aw)
                 try:
-                    stdscr.addstr(row_idx, 0, "".join(chars)[:aw], curses.color_pair(6) | curses.A_DIM)
+                    stdscr.addstr(row_idx, 0, line, curses.color_pair(6) | curses.A_DIM)
                 except curses.error:
                     pass
             else:
@@ -1683,6 +1713,8 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         sweep = (math.sin(amp_t * 3.2) + 1.0) * 0.5 * (aw - 1)
         for r in range(viz_h):
             row_idx = viz_top + (viz_h - 1 - r)
+            if row_idx >= viz_top + viz_h:
+                continue
             chars = []
             for x in range(aw):
                 dist = abs(x - sweep)
@@ -1693,9 +1725,10 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                     chars.append("·")
                 else:
                     chars.append(" ")
+            line = _truncate_to_width("".join(chars), aw)
             color = curses.color_pair(3) | (curses.A_BOLD if r == 0 else curses.A_DIM)
             try:
-                stdscr.addstr(row_idx, 0, "".join(chars)[:aw], color)
+                stdscr.addstr(row_idx, 0, line, color)
             except curses.error:
                 pass
         return
@@ -1735,7 +1768,10 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
         for r in range(viz_h):
             row_idx = viz_top + r
+            if row_idx >= viz_top + viz_h:
+                continue
             line = "".join(chr(0x2800 + canvas[r][c]) for c in range(aw))
+            line = _truncate_to_width(line, aw)
             if is_paused:
                 attr = curses.color_pair(6) | curses.A_DIM
             elif r == 0:
@@ -1745,15 +1781,16 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
             else:
                 attr = curses.color_pair(3)
             try:
-                stdscr.addstr(row_idx, 0, line[:aw], attr)
+                stdscr.addstr(row_idx, 0, line, attr)
             except curses.error:
                 pass
 
         if is_paused:
             p_badge = " [ PAUSED · SHEATHED ] "
             p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
             try:
-                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                stdscr.addstr(p_row, p_col, p_badge,
                               curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
@@ -1783,6 +1820,8 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
         for r in range(viz_h - 1, -1, -1):
             row_idx = viz_top + (viz_h - 1 - r)
+            if row_idx >= viz_top + viz_h:
+                continue
             left_cells = []
             for h_val in left_h:
                 if h_val >= (r + 1) * 8:
@@ -1807,7 +1846,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
             pad_l = max(0, center_x - len(l_str) - 2)
             div = " ▌▐ " if r == 0 else (" ║ " if r == 1 else " │ ")
-            full_line = ((" " * pad_l) + l_str + div + r_str).ljust(aw)[:aw]
+            full_line = _truncate_to_width(((" " * pad_l) + l_str + div + r_str).ljust(aw), aw)
 
             if is_paused:
                 attr = curses.color_pair(6) | curses.A_DIM
@@ -1818,15 +1857,16 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
             else:
                 attr = curses.color_pair(3)
             try:
-                stdscr.addstr(row_idx, 0, full_line[:aw], attr)
+                stdscr.addstr(row_idx, 0, full_line, attr)
             except curses.error:
                 pass
 
         if is_paused:
             p_badge = " [ PAUSED · SHEATHED ] "
             p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
             try:
-                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                stdscr.addstr(p_row, p_col, p_badge,
                               curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
@@ -1846,6 +1886,8 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
         for r in range(viz_h - 1, -1, -1):
             row_idx = viz_top + (viz_h - 1 - r)
+            if row_idx >= viz_top + viz_h:
+                continue
             row_chars = []
             for h_val in heights:
                 if h_val >= (r + 1) * 8:
@@ -1855,7 +1897,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 else:
                     cell = _AMP_BLOCKS[min(7, max(0, int(h_val - r * 8) - 1))]
                 row_chars.append(cell)
-            line = "".join(row_chars)[:aw]
+            line = _truncate_to_width("".join(row_chars), aw)
 
             if is_paused:
                 attr = curses.color_pair(6) | curses.A_DIM
@@ -1873,8 +1915,9 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         if is_paused:
             p_badge = " [ PAUSED · SHEATHED ] "
             p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
             try:
-                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                stdscr.addstr(p_row, p_col, p_badge,
                               curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
@@ -1882,9 +1925,11 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
     # ── MODE: MATRIX (Cyberpunk Falling Matrix Rain) ────────────────────
     if mode == "matrix":
-        CHAR_POOL = "0123456789ABCDEFｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ"
+        CHAR_POOL = "0123456789ABCDEFabcdef!@#$%^&*+-="
         for r in range(viz_h):
             row_idx = viz_top + r
+            if row_idx >= viz_top + viz_h:
+                continue
             for c in range(aw):
                 seed = c * 13 + r * 7
                 drop_pos = int((amp_t * (10 + (c % 7) * 4) + seed) % (viz_h + 10)) - 5
@@ -1908,8 +1953,9 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         if is_paused:
             p_badge = " [ MATRIX PAUSED ] "
             p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
             try:
-                stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+                stdscr.addstr(p_row, p_col, p_badge,
                               curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
@@ -1922,7 +1968,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         if is_paused:
             beat_l = beat_r = 0.0
 
-        gauge_w = max(10, aw - 34)
+        gauge_w = max(6, aw - 34)
         db_l = -40.0 + (beat_l * 43.0)
         db_r = -40.0 + (beat_r * 43.0)
 
@@ -1932,21 +1978,38 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         l_bar = "█" * l_fill + "░" * (gauge_w - l_fill)
         r_bar = "█" * r_fill + "░" * (gauge_w - r_fill)
 
-        line_l = f"  LEFT   [{l_bar}] {db_l:+5.1f} dB  ▲ {db_l + 1.2:+4.1f} dB"
-        line_r = f"  RIGHT  [{r_bar}] {db_r:+5.1f} dB  ▲ {db_r + 1.5:+4.1f} dB"
+        line_l = f"  LEFT   [{l_bar}] {db_l:+5.1f} dB  ^ {db_l + 1.2:+4.1f} dB"
+        line_r = f"  RIGHT  [{r_bar}] {db_r:+5.1f} dB  ^ {db_r + 1.5:+4.1f} dB"
         ticks  = "          -40     -20    -10    -6     -3     0     +3 dB"
 
-        rows = [ticks, line_l, line_r]
+        if viz_h <= 2:
+            rows = [line_l, line_r]
+            offset = 0
+        else:
+            rows = [ticks, line_l, line_r]
+            offset = (viz_h - len(rows)) // 2
+
         for idx, text in enumerate(rows):
-            if idx < viz_h:
-                row_idx = viz_top + idx
-                attr = curses.color_pair(2) | curses.A_BOLD if idx > 0 else curses.color_pair(3)
+            r = offset + idx
+            if 0 <= r < viz_h:
+                row_idx = viz_top + r
+                attr = curses.color_pair(2) | curses.A_BOLD if (idx > 0 or viz_h <= 2) else curses.color_pair(3)
                 if is_paused:
                     attr = curses.color_pair(6) | curses.A_DIM
+                line = _truncate_to_width(_pad_to_width(text, aw), aw)
                 try:
-                    stdscr.addstr(row_idx, 0, text.ljust(aw)[:aw], attr)
+                    stdscr.addstr(row_idx, 0, line, attr)
                 except curses.error:
                     pass
+        if is_paused:
+            p_badge = " [ VU PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
+            try:
+                stdscr.addstr(p_row, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
         return
 
     # ── MODE: OSCILLOSCOPE (Lissajous Vector Phase-Space Curve) ─────────
@@ -1985,10 +2048,22 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
         for r in range(viz_h):
             row_idx = viz_top + r
+            if row_idx >= viz_top + viz_h:
+                continue
             line = "".join(chr(0x2800 + canvas[r][c]) for c in range(aw))
+            line = _truncate_to_width(line, aw)
             attr = (curses.color_pair(3) | curses.A_BOLD) if not is_paused else (curses.color_pair(6) | curses.A_DIM)
             try:
-                stdscr.addstr(row_idx, 0, line[:aw], attr)
+                stdscr.addstr(row_idx, 0, line, attr)
+            except curses.error:
+                pass
+        if is_paused:
+            p_badge = " [ OSCILLOSCOPE PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
+            try:
+                stdscr.addstr(p_row, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
         return
@@ -2001,7 +2076,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         attrs = [[curses.color_pair(6) for _ in range(aw)] for _ in range(viz_h)]
         cx, cy = aw / 2.0, viz_h / 2.0
         num_stars = min(80, aw)
-        STAR_CHARS = [".", "·", "•", "*", "+", "✦", "★"]
+        STAR_CHARS = [".", "·", "*", "+", "^", "~", "o"]
         for s in range(num_stars):
             angle = (s * 137.5 * math.pi / 180.0)
             r = ((speed + s * 1.7) % 20.0)
@@ -2018,9 +2093,20 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                     attrs[y][x] = curses.color_pair(3) | curses.A_DIM
         for r in range(viz_h):
             row_idx = viz_top + r
+            if row_idx >= viz_top + viz_h:
+                continue
             try:
                 for c in range(aw):
                     stdscr.addch(row_idx, c, grid[r][c], attrs[r][c])
+            except curses.error:
+                pass
+        if is_paused:
+            p_badge = " [ HYPERDRIVE PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
+            try:
+                stdscr.addstr(p_row, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
         return
@@ -2038,23 +2124,34 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
             y2 = int(round((v2 * 0.42 * amp + 0.5) * (viz_h - 1)))
             y1 = max(0, min(viz_h - 1, y1))
             y2 = max(0, min(viz_h - 1, y2))
-            
+
             if x % 3 == 0:
                 ymin, ymax = min(y1, y2), max(y1, y2)
                 for ry in range(ymin + 1, ymax):
                     grid[ry][x] = "│" if abs(v1) > 0.3 else "┆"
                     attrs[ry][x] = curses.color_pair(3) | curses.A_DIM
-            
-            grid[y1][x] = "◆" if beat > 0.5 else "●"
+
+            grid[y1][x] = "#" if beat > 0.5 else "*"
             attrs[y1][x] = curses.color_pair(1) | curses.A_BOLD if not is_paused else curses.color_pair(6)
-            grid[y2][x] = "◈" if beat > 0.5 else "○"
+            grid[y2][x] = "@" if beat > 0.5 else "o"
             attrs[y2][x] = curses.color_pair(2) | curses.A_BOLD if not is_paused else curses.color_pair(6)
 
         for r in range(viz_h):
             row_idx = viz_top + r
+            if row_idx >= viz_top + viz_h:
+                continue
             try:
                 for c in range(aw):
                     stdscr.addch(row_idx, c, grid[r][c], attrs[r][c])
+            except curses.error:
+                pass
+        if is_paused:
+            p_badge = " [ DNA PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
+            try:
+                stdscr.addstr(p_row, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
         return
@@ -2062,9 +2159,11 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
     # ── MODE: FIRE (Demoscene Flame Equalizer) ──────────────────────────
     if mode == "fire":
         beat = max(0.0, math.sin(amp_t * 2.5 * math.pi)) ** 3.0
-        FIRE_CHARS = [" ", "░", "▒", "▓", "█", "▲"]
+        FIRE_CHARS = [" ", "░", "▒", "▓", "█", "^"]
         for r in range(viz_h - 1, -1, -1):
             row_idx = viz_top + (viz_h - 1 - r)
+            if row_idx >= viz_top + viz_h:
+                continue
             row_chars = []
             for x in range(aw):
                 h_val = (math.sin(amp_t * 4.2 + x * 0.22) * 0.35 +
@@ -2077,7 +2176,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 else:
                     cell = " "
                 row_chars.append(cell)
-            line = "".join(row_chars)[:aw]
+            line = _truncate_to_width("".join(row_chars), aw)
 
             if is_paused:
                 attr = curses.color_pair(6) | curses.A_DIM
@@ -2091,6 +2190,15 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 stdscr.addstr(row_idx, 0, line, attr)
             except curses.error:
                 pass
+        if is_paused:
+            p_badge = " [ FIRE PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
+            try:
+                stdscr.addstr(p_row, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
         return
 
     # ── MODE: CYBERPUNK (Retrowave Horizon & Retrowave Sun) ─────────────
@@ -2098,19 +2206,21 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         grid_row = max(1, viz_h // 2)
         for r in range(viz_h):
             row_idx = viz_top + r
+            if row_idx >= viz_top + viz_h:
+                continue
             if r < grid_row:
                 sun_r = grid_row - 1 - r
                 sun_w = int(max(0, 14 - sun_r * 4))
                 if sun_w > 0:
                     sun_str = "▀" * sun_w
                     left_pad = max(0, (aw - sun_w) // 2)
-                    line = (" " * left_pad + sun_str).ljust(aw)[:aw]
+                    line = _truncate_to_width((" " * left_pad + sun_str).ljust(aw), aw)
                     attr = curses.color_pair(4) | curses.A_BOLD if not is_paused else curses.color_pair(6) | curses.A_DIM
                 else:
                     line = " " * aw
                     attr = curses.color_pair(6)
             elif r == grid_row:
-                line = ("─" * aw)[:aw]
+                line = _truncate_to_width("─" * aw, aw)
                 attr = curses.color_pair(5) | curses.A_BOLD if not is_paused else curses.color_pair(6)
             else:
                 shift = int((amp_t * 6.0) % 4)
@@ -2120,10 +2230,19 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                         grid_chars.append("┼")
                     else:
                         grid_chars.append("─")
-                line = "".join(grid_chars)[:aw]
+                line = _truncate_to_width("".join(grid_chars), aw)
                 attr = curses.color_pair(1) | curses.A_BOLD if not is_paused else curses.color_pair(6) | curses.A_DIM
             try:
                 stdscr.addstr(row_idx, 0, line, attr)
+            except curses.error:
+                pass
+        if is_paused:
+            p_badge = " [ CYBERPUNK PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
+            try:
+                stdscr.addstr(p_row, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
         return
@@ -2133,6 +2252,8 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
         BRAILLE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         for r in range(viz_h):
             row_idx = viz_top + r
+            if row_idx >= viz_top + viz_h:
+                continue
             row_chars = []
             for x in range(aw):
                 v = (math.sin(amp_t * 2.8 + x * 0.15 + r * 0.8) * 0.4 +
@@ -2140,7 +2261,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 v = min(1.0, max(0.0, v * amp))
                 b_idx = int(v * (len(BRAILLE) - 1))
                 row_chars.append(BRAILLE[b_idx])
-            line = "".join(row_chars)[:aw]
+            line = _truncate_to_width("".join(row_chars), aw)
             if is_paused:
                 attr = curses.color_pair(6) | curses.A_DIM
             elif r == 0:
@@ -2151,6 +2272,15 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 attr = curses.color_pair(3)
             try:
                 stdscr.addstr(row_idx, 0, line, attr)
+            except curses.error:
+                pass
+        if is_paused:
+            p_badge = " [ AURORA PAUSED ] "
+            p_col = max(0, (aw - len(p_badge)) // 2)
+            p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
+            try:
+                stdscr.addstr(p_row, p_col, p_badge,
+                              curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
         return
@@ -2217,6 +2347,8 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
     for r in range(viz_h - 1, -1, -1):
         row_idx = viz_top + (viz_h - 1 - r)
+        if row_idx >= viz_top + viz_h:
+            continue
         if is_paused:
             attr_bar = curses.color_pair(6) | curses.A_DIM
             attr_peak = curses.color_pair(6) | curses.A_DIM
@@ -2243,7 +2375,7 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 cell = "█" * bar_w
             elif h_val <= r * 8:
                 if p_row == r and p_val > 1.5:
-                    cell = "▔" * bar_w
+                    cell = "─" * bar_w
                     peak_positions.append(col_offset)
                 else:
                     cell = " " * bar_w
@@ -2257,21 +2389,22 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
                 row_str.append(" " * gap)
                 col_offset += gap
 
-        full_row = ("".join(row_str)).ljust(aw)[:aw]
+        full_row = _truncate_to_width("".join(row_str).ljust(aw), aw)
         try:
             stdscr.addstr(row_idx, 0, full_row, attr_bar)
             if not is_paused:
                 for px in peak_positions:
                     if px + bar_w <= aw:
-                        stdscr.addstr(row_idx, px, "▔" * bar_w, attr_peak)
+                        stdscr.addstr(row_idx, px, "─" * bar_w, attr_peak)
         except curses.error:
             pass
 
     if is_paused:
         p_badge = " [ PAUSED · SHEATHED ] "
         p_col = max(0, (aw - len(p_badge)) // 2)
+        p_row = viz_top + min(viz_h - 1, max(0, viz_h // 2))
         try:
-            stdscr.addstr(viz_top + viz_h // 2, p_col, p_badge,
+            stdscr.addstr(p_row, p_col, p_badge,
                           curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
         except curses.error:
             pass
@@ -2289,10 +2422,12 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     # Left: logo + state.  Right: state badge right-aligned.
     left0  = f" ♪  Skye Player"
     right0 = f" 🎧⚡ DJ MODE · {mark} {label} " if status.get("dj_mode") else f" {mark} {label} "
-    pad0   = max(0, W - len(left0) - len(right0))
+    left0_w = _display_width(left0)
+    right0_w = _display_width(right0)
+    pad0   = max(0, W - left0_w - right0_w)
+    row0_str = _truncate_to_width(left0 + " " * pad0 + right0, W)
     try:
-        stdscr.addstr(0, 0, (left0 + " " * pad0 + right0)[:W],
-                      curses.color_pair(1) | curses.A_BOLD)
+        stdscr.addstr(0, 0, row0_str, curses.color_pair(1) | curses.A_BOLD)
     except curses.error:
         pass
 
@@ -2302,13 +2437,24 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     dur      = status.get("duration")
     dur_s    = _fmt_time(dur)
     time_str = f"  {pos_s} / {dur_s}  "
-    title_w  = max(0, W - len(time_str))
+    time_w   = _display_width(time_str)
+    title_avail = max(0, W - time_w)
+    title_disp  = _truncate_to_width(" " + title, title_avail)
+    title_disp_w = _display_width(title_disp)
+    mid_pad = " " * max(0, W - title_disp_w - time_w)
     try:
-        stdscr.addstr(1, 0, (" " + title)[:title_w], curses.color_pair(5) | curses.A_BOLD)
+        stdscr.addstr(1, 0, title_disp, curses.color_pair(5) | curses.A_BOLD)
     except curses.error:
         pass
     try:
-        stdscr.addstr(1, max(0, W - len(time_str)), time_str[:W], curses.color_pair(3))
+        if mid_pad:
+            stdscr.addstr(1, title_disp_w, mid_pad, curses.color_pair(5))
+    except curses.error:
+        pass
+    try:
+        time_x = max(title_disp_w, W - time_w)
+        time_avail = max(0, W - time_x)
+        stdscr.addstr(1, time_x, _truncate_to_width(time_str, time_avail), curses.color_pair(3))
     except curses.error:
         pass
 
@@ -2334,8 +2480,9 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
             if 0 <= idx_b < len(bar_chars):
                 bar_chars[idx_b] = "]"
         bar = "".join(bar_chars)
+    p_line = _truncate_to_width("▕" + bar[:bw] + "▏", W)
     try:
-        stdscr.addstr(2, 0, ("▕" + bar[:bw] + "▏")[:W], curses.color_pair(3))
+        stdscr.addstr(2, 0, p_line, curses.color_pair(3))
     except curses.error:
         pass
 
@@ -2372,8 +2519,9 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     err = status.get("error")
     if err:
         meta += f"  ✖ {err}"
+    meta_line = _truncate_to_width(meta, W)
     try:
-        stdscr.addstr(3, 0, meta[:W], curses.color_pair(4) if err else curses.color_pair(3))
+        stdscr.addstr(3, 0, meta_line, curses.color_pair(4) if err else curses.color_pair(3))
     except curses.error:
         pass
 
@@ -2412,7 +2560,7 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
             art_h = min(6, len(art_lines))
             for i in range(art_h):
                 try:
-                    stdscr.addstr(top + i, left + 1, art_lines[i][:avail_w - 2])
+                    stdscr.addstr(top + i, left + 1, _truncate_to_width(art_lines[i], avail_w - 2))
                 except curses.error:
                     pass
             top += art_h + 1
@@ -2420,7 +2568,7 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
     if not vis:
         empty_msg = ("  (queue is empty  ·  / to search)" if not qfilter else f"  (no tracks matching '{qfilter}')")
         try:
-            stdscr.addstr(top, left, empty_msg[:avail_w], curses.color_pair(6) | curses.A_DIM)
+            stdscr.addstr(top, left, _truncate_to_width(empty_msg, avail_w), curses.color_pair(6) | curses.A_DIM)
         except curses.error:
             pass
         return
@@ -2441,9 +2589,13 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
         dur     = _fmt_time(t.get("duration"))
         dur_str = f"  {dur}" if avail_w > 26 else ""
         prefix  = f"{icon}{num}  "
-        title_avail = max(1, avail_w - len(prefix) - len(dur_str))
-        title_text  = (t.get("title") or "")[:title_avail]
-        line1   = f"{prefix}{title_text:<{title_avail}}{dur_str}"
+        prefix_w = _display_width(prefix)
+        dur_w   = _display_width(dur_str)
+        title_avail = max(0, avail_w - prefix_w - dur_w)
+        title_text  = _truncate_to_width(t.get("title") or "", title_avail)
+        title_w     = _display_width(title_text)
+        pad_spaces  = " " * max(0, avail_w - prefix_w - title_w - dur_w)
+        line1   = _truncate_to_width(f"{prefix}{title_text}{pad_spaces}{dur_str}", avail_w)
 
         if is_sel and is_cur:
             attr1 = curses.color_pair(2) | curses.A_REVERSE
@@ -2454,7 +2606,7 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
         else:
             attr1 = curses.color_pair(6)
         try:
-            stdscr.addstr(row, left, line1[:avail_w], attr1)
+            stdscr.addstr(row, left, line1, attr1)
         except curses.error:
             pass
 
@@ -2462,10 +2614,10 @@ def _draw_queue(stdscr, status: dict, h: int, w: int, qsel: int, qfilter: str = 
         if row + 1 < bottom:
             ch = (t.get("channel") or "").strip()
             if ch:
-                ch_line = f"     ↳ {ch}"
+                ch_line = _truncate_to_width(f"     ↳ {ch}", avail_w)
                 ch_attr = (curses.color_pair(2) | curses.A_DIM) if is_cur else (curses.color_pair(6) | curses.A_DIM)
                 try:
-                    stdscr.addstr(row + 1, left, ch_line[:avail_w], ch_attr)
+                    stdscr.addstr(row + 1, left, ch_line, ch_attr)
                 except curses.error:
                     pass
 
@@ -2788,14 +2940,18 @@ def _draw_search(stdscr, h: int, w: int, sq, sresults, ssel, ssearching, smsg,
             dur = _fmt_time(r.get("duration"))
             channel = r.get("channel") or ""
             mark = "▸" if i == ssel else " "
-            title_w = max(1, w - 36)
-            body = f"  {mark} {i + 1:>2}.  {(r.get('title') or '')[:title_avail] if (title_avail := max(1, w - 36)) else ''<{title_avail}}  [{dur:>5}]  {channel[:16]}"
-            body = f"  {mark} {i + 1:>2}.  {r.get('title', '')[:title_w]:<{title_w}}  [{dur:>5}]  {channel[:16]}"
+            title_avail = max(1, w - 36)
+            title_part = _truncate_to_width(r.get("title") or "", title_avail)
+            pad_title = " " * max(0, title_avail - _display_width(title_part))
+            body = _truncate_to_width(
+                f"  {mark} {i + 1:>2}.  {title_part}{pad_title}  [{dur:>5}]  {channel[:16]}",
+                max(1, w - 2)
+            )
             attr = curses.color_pair(2) | curses.A_BOLD if i == ssel else curses.color_pair(6)
             if i == ssel:
                 attr |= curses.A_REVERSE
             try:
-                stdscr.addstr(row, 0, body[: max(1, w - 2)], attr)
+                stdscr.addstr(row, 0, body, attr)
             except curses.error:
                 pass
             row += 1
