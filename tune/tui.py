@@ -1421,6 +1421,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
     lines = ui.get("lyr_lines", [])
     if not lines:
         note = ui.get("lyr_note") or "no lyrics available"
+        note = note.replace("\r", "").replace("\n", "").replace("\t", " ")
         try:
             stdscr.addstr(top, left, _truncate_to_width("  " + note, pane_w), curses.color_pair(4))
         except curses.error:
@@ -1448,7 +1449,8 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
                 pass
             for i in range(0, min(len(lines), window - 1)):
                 row = top + 1 + i
-                text = _truncate_to_width("  " + lines[i]["text"], pane_w)
+                clean_t = lines[i]["text"].replace("\r", "").replace("\n", "").replace("\t", " ")
+                text = _truncate_to_width("  " + clean_t, pane_w)
                 attr = curses.color_pair(6)
                 if i > 2:
                     attr |= curses.A_DIM
@@ -1462,7 +1464,7 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
         start = max(0, cur - window // 2)
         for i in range(start, min(len(lines), start + window)):
             row = top + (i - start)
-            text_raw = lines[i]["text"]
+            text_raw = lines[i]["text"].replace("\r", "").replace("\n", "").replace("\t", " ")
             pad = "  "
             text_disp = _truncate_to_width(pad + text_raw, pane_w)
             ln = lines[i]
@@ -1525,7 +1527,8 @@ def _draw_lyrics(stdscr, status: dict, ui: dict, h: int, w: int, top: int = 6,
         scroll = max(0, min(max(0, len(lines) - window), ui.get("lyr_scroll", 0)))
         for i in range(scroll, min(len(lines), scroll + window)):
             row = top + (i - scroll)
-            text = _truncate_to_width("  " + lines[i]["text"], pane_w)
+            clean_t = lines[i]["text"].replace("\r", "").replace("\n", "").replace("\t", " ")
+            text = _truncate_to_width("  " + clean_t, pane_w)
             try:
                 stdscr.addstr(row, left, text, curses.color_pair(6))
             except curses.error:
