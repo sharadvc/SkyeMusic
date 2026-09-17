@@ -548,6 +548,18 @@ def _now_key(ch: int, mode: str, status: dict, ui: dict, qfilter: str = "") -> s
     elif ch == ord("r"):
         ui["lyr_fetched_track"] = ""
         _update_lyrics(ui, status)
+    elif ch == ord("{"):
+        _bg_send("pitch", "-1")
+        ui["viz_toast"] = "♭ PITCH -1 SEMITONE"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch == ord("}"):
+        _bg_send("pitch", "+1")
+        ui["viz_toast"] = "♯ PITCH +1 SEMITONE"
+        ui["viz_toast_t"] = time.monotonic()
+    elif ch in (ord("|"), ord("=")):
+        _bg_send("pitch", "reset")
+        ui["viz_toast"] = "♮ PITCH RESET"
+        ui["viz_toast_t"] = time.monotonic()
     elif ch == ord(","):
         ui["lyr_offset"] = round(ui.get("lyr_offset", 0.0) - 0.05, 2)
         ui["viz_toast"] = f"LYRICS SYNC: {ui['lyr_offset']:+.2f}s"
@@ -2831,6 +2843,42 @@ def _draw_amp(stdscr, status: dict, amp_t: float, w: int, ui: dict,
 
 
 
+def _draw_waveform_bar(stdscr, y, x, bw, frac, seed, ab_a_frac, ab_b_frac, c_played, c_unplayed, c_marker) -> None:
+    WAVE_CHARS = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    import math
+    
+    played_w = int(bw * frac)
+    
+    # Generate deterministic waveform array for this track
+    chars = []
+    for i in range(bw):
+        v1 = math.sin((i + seed) * 0.1)
+        v2 = math.sin((i + seed * 2) * 0.3)
+        v3 = math.sin((i + seed * 3) * 0.05)
+        v = (v1 * 0.5 + v2 * 0.3 + v3 * 0.2 + 1.0) / 2.0
+        idx = int(v * len(WAVE_CHARS))
+        idx = max(0, min(len(WAVE_CHARS) - 1, idx))
+        chars.append(WAVE_CHARS[idx])
+        
+    try:
+        if played_w > 0:
+            stdscr.addstr(y, x, "".join(chars[:played_w]), c_played)
+        if bw - played_w > 0:
+            stdscr.addstr(y, x + played_w, "".join(chars[played_w:]), c_unplayed)
+            
+        # Draw A-B loop markers
+        if ab_a_frac is not None and 0 <= ab_a_frac <= 1.0:
+            idx_a = int(ab_a_frac * bw)
+            if 0 <= idx_a < bw:
+                stdscr.addstr(y, x + idx_a, "[", c_marker)
+        if ab_b_frac is not None and 0 <= ab_b_frac <= 1.0:
+            idx_b = int(ab_b_frac * bw)
+            if 0 <= idx_b < bw:
+                stdscr.addstr(y, x + idx_b, "]", c_marker)
+    except curses.error:
+        pass
+
+
 def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     """5-row header: brand bar · title+time · progress bar · meta · visualizer."""
     W = max(1, w - 2)   # safe write width (w - 2 prevents curses right-edge line wrap)
@@ -2882,29 +2930,25 @@ def _draw_header(stdscr, status: dict, w: int, amp_t: float = 0.0) -> None:
     frac   = (status.get("position") or 0) / dur if dur else 0.0
     frac   = min(1.0, max(0.0, frac))
     bw     = max(0, W - 2)
-    filled = int(bw * frac)
-    bar    = "━" * filled + "─" * (bw - filled)
-    # tick mark at playhead
-    if 0 < filled < bw:
-        bar = bar[:filled - 1] + "●" + bar[filled:]
-    ab_a = status.get("ab_loop_a")
-    ab_b = status.get("ab_loop_b")
-    if dur and bw > 10:
-        bar_chars = list(bar)
-        if ab_a is not None:
-            idx_a = int(round((ab_a / dur) * (bw - 1)))
-            if 0 <= idx_a < len(bar_chars):
-                bar_chars[idx_a] = "["
-        if ab_b is not None:
-            idx_b = int(round((ab_b / dur) * (bw - 1)))
-            if 0 <= idx_b < len(bar_chars):
-                bar_chars[idx_b] = "]"
-        bar = "".join(bar_chars)
-    p_line = _truncate_to_width("▕" + bar[:bw] + "▏", W)
+    
     try:
-        stdscr.addstr(2, 0, p_line, curses.color_pair(3))
+        stdscr.addstr(2, 0, "▕", curses.color_pair(6) | curses.A_DIM)
+        stdscr.addstr(2, bw + 1, "▏", curses.color_pair(6) | curses.A_DIM)
     except curses.error:
         pass
+        
+    seed = abs(hash(status.get("url", "") + status.get("title", "")))
+    ab_a = status.get("ab_loop_a")
+    ab_b = status.get("ab_loop_b")
+    a_frac = ab_a / dur if dur and ab_a is not None else None
+    b_frac = ab_b / dur if dur and ab_b is not None else None
+    
+    _draw_waveform_bar(
+        stdscr, 2, 1, bw, frac, seed, a_frac, b_frac,
+        curses.color_pair(3), 
+        curses.color_pair(6) | curses.A_DIM,
+        curses.color_pair(1) | curses.A_BOLD
+    )
 
     # ── Row 3: meta info ──────────────────────────────────────────────────
     idx      = status.get("current_index", -1)
@@ -3108,20 +3152,29 @@ def _draw_mini_player(stdscr, status: dict, ui: dict, h: int, w: int, amp_t: flo
     except curses.error:
         pass
 
-    # 6. Progress Bar: │ ▕━━━━━━━━━━━━━●───────────────────────────▏ │
+    # 6. Progress Bar: │ ▕ ▂▃▅▇█▇▅▃▂ ──────────▏ │
     frac   = (status.get("position") or 0) / dur if dur else 0.0
     frac   = min(1.0, max(0.0, frac))
     bw     = max(1, inner_w - 2)
-    filled = int(bw * frac)
-    bar    = "━" * filled + "─" * (bw - filled)
-    if 0 < filled < bw:
-        bar = bar[:filled - 1] + "●" + bar[filled:]
-    p_str  = f"▕{bar[:bw]}▏"
-    p_line = f"│ {_pad_to_width(p_str, inner_w)} │"
+    
     try:
-        stdscr.addstr(top + 4, left, p_line, curses.color_pair(3))
+        stdscr.addstr(top + 4, left, "│ ▕", curses.color_pair(6))
+        stdscr.addstr(top + 4, left + 3 + bw, "▏ │", curses.color_pair(6))
     except curses.error:
         pass
+        
+    seed = abs(hash(status.get("url", "") + status.get("title", "")))
+    ab_a = status.get("ab_loop_a")
+    ab_b = status.get("ab_loop_b")
+    a_frac = ab_a / dur if dur and ab_a is not None else None
+    b_frac = ab_b / dur if dur and ab_b is not None else None
+    
+    _draw_waveform_bar(
+        stdscr, top + 4, left + 3, bw, frac, seed, a_frac, b_frac,
+        curses.color_pair(3),
+        curses.color_pair(6) | curses.A_DIM,
+        curses.color_pair(1) | curses.A_BOLD
+    )
 
     # 7. Live 1-line Karaoke Lyrics preview: │ ♫ "Live lyric text..." │
     lyr_str = ""
