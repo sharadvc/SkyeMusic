@@ -1059,6 +1059,136 @@ def _home_key(ch: int, mode: str, status: dict, ui: dict,
                     ui["viz_toast"] = f"RESUMING: {recents[0].get('title', 'LAST SESSION')[:30]}"
                 else:
                     ui["viz_toast"] = "NO PREVIOUS SESSION FOUND"
+            elif row == 2:
+                _bg_send("favs", "play")
+                ui["viz_toast"] = "FAVORITES: PLAYING"
+            elif row == 3:
+                _bg_send("dj", "")
+                ui["viz_toast"] = "PIONEER CDJ DECK: READY"
+                ui["viz_toast_t"] = time.monotonic()
+                return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+            elif row == 4:
+                _bg_send("mood", "lofi beats chill")
+                ui["viz_toast"] = "MOOD: LOFI BEATS"
+            elif row == 5:
+                return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+                
+            ui["viz_toast_t"] = time.monotonic()
+            return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+            
+        elif col == 1:
+            recents = _load_recent_history(limit=6)
+            if row < len(recents):
+                rc = recents[row]
+                if target := rc.get("url") or rc.get("title"):
+                    _bg_send("play", target)
+                    ui["viz_toast"] = f"RESUMING: {rc.get('title', 'TRACK')[:30]}"
+                    ui["viz_toast_t"] = time.monotonic()
+                    return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # Direct Letter Shortcuts
+    if ch in (ord("r"), ord("R")):
+        _bg_send("radio")
+        ui["viz_toast"] = "SMART RADIO: LAUNCHED"
+        ui["viz_toast_t"] = time.monotonic()
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("h"), ord("H")):
+        recents = _load_recent_history(limit=1)
+        if recents and (target := recents[0].get("url") or recents[0].get("title")):
+            _bg_send("play", target)
+            ui["viz_toast"] = f"RESUMING: {recents[0].get('title', 'LAST SESSION')[:30]}"
+        else:
+            ui["viz_toast"] = "NO PREVIOUS SESSION FOUND"
+        ui["viz_toast_t"] = time.monotonic()
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("f"), ord("F")):
+        _bg_send("favs", "play")
+        ui["viz_toast"] = "FAVORITES: PLAYING"
+        ui["viz_toast_t"] = time.monotonic()
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("j"), ord("J")):
+        _bg_send("dj", "")
+        ui["viz_toast"] = "PIONEER CDJ DECK: READY"
+        ui["viz_toast_t"] = time.monotonic()
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # Quick Mood Pills: 1-5
+    MOOD_MAP = {
+        ord("1"): "lofi beats chill",
+        ord("2"): "synthwave retrowave 80s",
+        ord("3"): "acoustic unplugged guitar chill",
+        ord("4"): "phonk drift night drive",
+        ord("5"): "japanese lofi anime",
+    }
+    if ch in MOOD_MAP:
+        query = MOOD_MAP[ch]
+        _bg_send("mood", query)
+        ui["viz_toast"] = f"MOOD: {query.upper()}"
+        ui["viz_toast_t"] = time.monotonic()
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("t"), ord("T")):
+        return "theme", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # Pressing / open empty search
+    if ch == ord("/"):
+        ui["_return_to_home"] = True
+        return "search", "", [], 0, False, "", {}
+
+    # Any other printable character: start searching immediately with that character!
+    if 32 <= ch <= 126:
+        ui["_return_to_home"] = True
+        init_c = chr(ch)
+        sbucket = sbucket or {}
+        _start_suggest(init_c, sbucket)
+        return "search", init_c, [], 0, False, "", sbucket
+
+    return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    if ch in (ord("q"),):
+        return "quit", sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # ESC or Tab: switch to Studio Player
+    if ch in (27, 9):
+        return "now", sq, sresults, ssel, ssearching, smsg, sbucket
+        
+    # Selection navigation (Arrow keys only, avoid conflicting with letter shortcuts!)
+    if ch == curses.KEY_DOWN:
+        ui["home_row"] = min(5, ui.get("home_row", -1) + 1)
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+    if ch == curses.KEY_UP:
+        ui["home_row"] = max(-1, ui.get("home_row", 0) - 1)
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+    if ch == curses.KEY_LEFT:
+        ui["home_col"] = 0
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+    if ch == curses.KEY_RIGHT:
+        ui["home_col"] = 1
+        return mode, sq, sresults, ssel, ssearching, smsg, sbucket
+
+    # Action selected item on Enter
+    if ch in (10, 13, curses.KEY_ENTER):
+        row = ui.get("home_row", -1)
+        col = ui.get("home_col", 0)
+        
+        if row == -1:
+            ui["_return_to_home"] = True
+            return "search", "", [], 0, False, "", {}
+            
+        if col == 0:
+            if row == 0:
+                _bg_send("radio")
+                ui["viz_toast"] = "SMART RADIO: LAUNCHED"
+            elif row == 1:
+                recents = _load_recent_history(limit=1)
+                if recents and (target := recents[0].get("url") or recents[0].get("title")):
+                    _bg_send("play", target)
+                    ui["viz_toast"] = f"RESUMING: {recents[0].get('title', 'LAST SESSION')[:30]}"
+                else:
+                    ui["viz_toast"] = "NO PREVIOUS SESSION FOUND"
                     return mode, sq, sresults, ssel, ssearching, smsg, sbucket
             elif row == 2:
                 _bg_send("favs", "play")
